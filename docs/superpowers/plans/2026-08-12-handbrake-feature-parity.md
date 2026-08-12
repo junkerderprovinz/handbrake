@@ -12,7 +12,7 @@
 
 - Repo: `d:\nextcloud\it\github\handbrake`, remote `https://github.com/junkerderprovinz/handbrake`, git identity `junkerderprovinz` / `jdp@braethoria.com`.
 - **All work in this plan lands on the branch `feat/feature-parity`** (Task 1) and is merged to `main` in Task 15. `main` is the release branch; never commit this plan's intermediate states directly to it. `build.yml` only runs on `main` and on tags, so the branch is verified locally (Task 11) before the merge.
-- Versioning: 3-digit SemVer, tags `vX.Y.Z`. Plan 1 shipped `v1.0.0`, Plan 2 `v1.1.0`, Plan 3 `v1.2.0` — this plan is the minor bump **`v1.3.0`** (new features, no breaking change: every new variable has a default that preserves Plan 1 behaviour except where noted in Task 13). Task 15 Step 1 confirms the real latest tag before the notes file is written.
+- Versioning: 3-digit SemVer, tags `vX.Y.Z`. Plan 1 shipped `v1.0.0`; Plans 2 and 3 ship **together** as `v1.1.0` (Plan 3 merges its bullets into `.github/release-notes/v1.1.0.md` rather than cutting a second tag). This plan is therefore the next minor bump, **`v1.2.0`** — new features, no breaking change: every new variable has a default that preserves Plan 1 behaviour except the one noted in Task 15 Step 8. Task 15 Step 1 confirms the real latest tag before the notes file is written.
 - **Everything inside the repo is English** — code, comments, commit messages, README, release notes, log strings.
 - **No AI attribution anywhere.** No `Co-Authored-By`, no "Generated with", no assistant references in commits, code or docs.
 - **No em dashes in GitHub issue/PR/forum prose.** Repo files such as the README may use them; issue and forum text may not.
@@ -20,7 +20,7 @@
 - **Fail loudly on permanent misconfiguration.** A staging directory that cannot be written, an allowed path that would publish the TLS private key, or an nginx fragment the server rejects must produce a loud, actionable log line and a safe fallback — never a silent half-working state.
 - **Do not redefine anything Plan 1 owns.** Plan 1's files are extended with the exact edits given here. Plan 2 owns `rootfs/usr/local/bin/handbrake-gpu.sh` and README section 8; this plan touches neither.
 - Never `git add -A`. Always stage explicit paths.
-- **Never tag or publish a release without explicit approval from jdp.** Merging to `main` and letting `:latest` rebuild is fine; cutting `v1.3.0` is gated (Task 15).
+- **Never tag or publish a release without explicit approval from jdp.** Merging to `main` and letting `:latest` rebuild is fine; cutting `v1.2.0` is gated (Task 15).
 
 ---
 
@@ -61,7 +61,7 @@ Verified against the local clones `d:\nextcloud\it\github\docker-baseimage-selki
 | 12 | CI feature-parity gate | `.github/workflows/build.yml` |
 | 13 | README | `README.md` |
 | 14 | `CLAUDE.md` and `justfile` | `CLAUDE.md`, `justfile` |
-| 15 | Merge, CI, release notes, gated tag | `.github/release-notes/v1.3.0.md` |
+| 15 | Merge, CI, release notes, gated tag | `.github/release-notes/v1.2.0.md` |
 | 16 | Follow-ups outside this repo | (no files in this repo) |
 
 ---
@@ -3012,12 +3012,12 @@ git commit -m "docs: record the web translation layer conventions and add the pa
 ### Task 15: Merge, CI, release notes and the gated tag
 
 **Files:**
-- Create: `d:\nextcloud\it\github\handbrake\.github\release-notes\v1.3.0.md`
+- Create: `d:\nextcloud\it\github\handbrake\.github\release-notes\v1.2.0.md`
 - Test/Verify: `Lint` and `Build & Push` green on `main` for both arches, including the new feature-parity gate.
 
 **Interfaces:**
 - Consumes: everything above.
-- Produces: `ghcr.io/junkerderprovinz/handbrake:1.3.0` / `:1.3` / `:1` / `:latest` and the GitHub release `v1.3.0` — **after approval only**.
+- Produces: `ghcr.io/junkerderprovinz/handbrake:1.2.0` / `:1.2` / `:1` / `:latest` and the GitHub release `v1.2.0` — **after approval only**.
 
 - [ ] **Step 1: Confirm the version number before writing anything**
 
@@ -3026,7 +3026,7 @@ cd /d/nextcloud/it/github/handbrake
 git fetch origin --tags
 git tag --list 'v*.*.*' --sort=-v:refname | head -n 3
 ```
-Expected: `v1.2.0`, `v1.1.0`, `v1.0.0`, which makes this release `v1.3.0`. If the newest tag is different, this release is the next **minor** after it (`v1.<latest minor + 1>.0`), and every `v1.3.0` below refers to that number instead. If the newest tag is already `v1.3.0` or higher, stop and report — a plan was executed out of order.
+Expected: `v1.1.0` then `v1.0.0` — Plans 2 and 3 share the `v1.1.0` tag — which makes this release `v1.2.0`. If the newest tag is different, this release is the next **minor** after it (`v1.<latest minor + 1>.0`), and every `v1.2.0` below refers to that number instead. If the newest tag is already `v1.2.0` or higher, stop and report: a plan was executed out of order, or a release was cut that this plan does not know about.
 
 - [ ] **Step 2: Merge to `main`**
 
@@ -3062,7 +3062,7 @@ git push origin --delete feat/feature-parity
 
 - [ ] **Step 5: Write the release notes**
 
-`d:\nextcloud\it\github\handbrake\.github\release-notes\v1.3.0.md`:
+`d:\nextcloud\it\github\handbrake\.github\release-notes\v1.2.0.md`:
 
 ```markdown
 Everything the community image does that this one did not yet: a file manager and a terminal in the browser, conversion hooks, a staging folder you can put on a fast disk, and two containers can now share one watch folder without fighting over the same file.
@@ -3093,10 +3093,10 @@ Everything the community image does that this one did not yet: a file manager an
 Run:
 ```bash
 cd /d/nextcloud/it/github/handbrake
-grep -nE '^#[^#]' .github/release-notes/v1.3.0.md && echo "H1 FOUND — remove it" || echo "no H1 heading (correct)"
-grep -nE '^## ' .github/release-notes/v1.3.0.md
-grep -nE 'v?1\.3\.0' .github/release-notes/v1.3.0.md && echo "VERSION IN BODY — remove it" || echo "no version heading in the body (correct)"
-grep -n '—' .github/release-notes/v1.3.0.md | head
+grep -nE '^#[^#]' .github/release-notes/v1.2.0.md && echo "H1 FOUND — remove it" || echo "no H1 heading (correct)"
+grep -nE '^## ' .github/release-notes/v1.2.0.md
+grep -nE 'v?1\.3\.0' .github/release-notes/v1.2.0.md && echo "VERSION IN BODY — remove it" || echo "no version heading in the body (correct)"
+grep -n '—' .github/release-notes/v1.2.0.md | head
 ```
 Expected: `no H1 heading (correct)`, exactly the three category headings `## ✨ Added`, `## ⚡ Improved`, `## 🐛 Fixed`, `no version heading in the body (correct)`, and no em dashes (release notes are GitHub prose).
 
@@ -3104,14 +3104,14 @@ Expected: `no H1 heading (correct)`, exactly the three category headings `## ✨
 
 ```bash
 cd /d/nextcloud/it/github/handbrake
-git add .github/release-notes/v1.3.0.md
-git commit -m "docs: add the v1.3.0 release notes"
+git add .github/release-notes/v1.2.0.md
+git commit -m "docs: add the v1.2.0 release notes"
 git push origin main
 ```
 
 - [ ] **Step 8: STOP — ask for approval before tagging**
 
-Do not run Step 9 until jdp has explicitly approved cutting `v1.3.0`. Report:
+Do not run Step 9 until jdp has explicitly approved cutting `v1.2.0`. Report:
 - both workflows green on both arches, with the parity gate passing,
 - the manual verification results from Task 11, **including that optical-drive support is wired but unverified because no drive was available**,
 - the one behaviour change a user will notice: the web file manager is on by default and now publishes the watch and output folders. Anyone whose container is reachable beyond their LAN should set `CUSTOM_USER` and `PASSWORD`.
@@ -3123,17 +3123,17 @@ Then ask.
 ```bash
 cd /d/nextcloud/it/github/handbrake
 git fetch origin && git pull --rebase origin main
-git tag v1.3.0
-git push origin v1.3.0
+git tag v1.2.0
+git push origin v1.2.0
 gh run watch "$(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status
-gh release view v1.3.0
+gh release view v1.2.0
 ```
-Expected: the release title is exactly `v1.3.0`, the body is the notes file, and the tag build publishes `:1.3.0`, `:1.3`, `:1` and `:latest`.
+Expected: the release title is exactly `v1.2.0`, the body is the notes file, and the tag build publishes `:1.2.0`, `:1.2`, `:1` and `:latest`.
 
 - [ ] **Step 10: Verify the published manifest**
 
 ```bash
-docker buildx imagetools inspect ghcr.io/junkerderprovinz/handbrake:1.3.0
+docker buildx imagetools inspect ghcr.io/junkerderprovinz/handbrake:1.2.0
 ```
 Expected: a manifest list with `linux/amd64` and `linux/arm64`.
 
@@ -3147,7 +3147,7 @@ House requirements, not optional. Do these in the same session as the release.
 - Modify: files in `d:\nextcloud\it\github\unraid-apps` and the Obsidian vault. Nothing in this repo.
 
 **Interfaces:**
-- Consumes: the released `v1.3.0` image and its environment contract.
+- Consumes: the released `v1.2.0` image and its environment contract.
 - Produces: a Community Applications template that actually exposes the new settings, and the vault record.
 
 - [ ] **Step 1: Add the new settings to the Unraid template**
@@ -3185,10 +3185,10 @@ Update the PascalCase repo note for HandBrake under `02 Projekte` with the new f
 ```bash
 gh issue create --repo junkerderprovinz/krusader \
   --title "File manager serves an empty folder and uploads are invisible" \
-  --body "The Selkies base defaults FILE_MANAGER_PATH to /config/Desktop and never sets SELKIES_UPLOAD_DIR, so the /files/ endpoint lists an empty directory and sidebar uploads land where the browser cannot see them. handbrake v1.3.0 fixes this by pointing both at the container's real data mounts. Same fix applies here."
+  --body "The Selkies base defaults FILE_MANAGER_PATH to /config/Desktop and never sets SELKIES_UPLOAD_DIR, so the /files/ endpoint lists an empty directory and sidebar uploads land where the browser cannot see them. handbrake v1.2.0 fixes this by pointing both at the container's real data mounts. Same fix applies here."
 gh issue create --repo junkerderprovinz/jdownloader \
   --title "File manager serves an empty folder and uploads are invisible" \
-  --body "The Selkies base defaults FILE_MANAGER_PATH to /config/Desktop and never sets SELKIES_UPLOAD_DIR, so the /files/ endpoint lists an empty directory and sidebar uploads land where the browser cannot see them. handbrake v1.3.0 fixes this by pointing both at the container's real data mounts. Same fix applies here."
+  --body "The Selkies base defaults FILE_MANAGER_PATH to /config/Desktop and never sets SELKIES_UPLOAD_DIR, so the /files/ endpoint lists an empty directory and sidebar uploads land where the browser cannot see them. handbrake v1.2.0 fixes this by pointing both at the container's real data mounts. Same fix applies here."
 ```
 
 Also note the contradiction found while researching this plan, and settle it in one pass across all three READMEs: `krusader/README.md` says port 3000 is not usable directly, while `jdownloader/README.md` says it works as a fallback without clipboard support. Only one can be right. Test it and make all three repos say the same thing.
