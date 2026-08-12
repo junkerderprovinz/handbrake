@@ -39,17 +39,56 @@ Plan 1's Global Constraints apply unchanged and are not repeated here. The ones 
 
 Plan 2 and Plan 3 both extend the same seam. These files are touched by both plans:
 
+Plan 2 (`docs/superpowers/plans/2026-08-12-handbrake-nvidia-gpu.md`) was written in
+parallel with this one and is already committed. Its shape, as of that commit:
+it rewrites the whole of `handbrake-gpu.sh` with its own helpers
+(`hb_help_lists_encoder`, `hb_help_lists_nvdec`, `nvidia_device_present`,
+`nvidia_lib_path`, `nvidia_smi_summary`), replaces README section 8 wholesale,
+ships `v1.1.0`, records its findings in a separate `docs/hardware-encoding-nvidia.md`,
+and **adds no assertions to `build.yml`**.
+
 | File | Collision | Rule |
 |---|---|---|
-| `rootfs/usr/local/bin/handbrake-gpu.sh` | Both add branches to `gpu_args_for_vendor()` | Task 6 writes the whole file. **Before overwriting, check for an existing `nvidia)` branch and paste it into the new file unchanged.** Task 6 Step 1 says exactly where. |
-| `Dockerfile` | Both add a package/ENV layer | Different layers, no textual overlap. Insert where Task 3 says. |
-| `README.md` section 8 | Both rewrite it | Task 13 gives the merge rule and the literal fallback sentence for the NVIDIA row. |
-| `.github/workflows/build.yml` smoke step | Both add assertions | Task 10 appends a clearly delimited block. Whoever runs second appends, never replaces. |
-| `CLAUDE.md` GPU bullet | Both correct it | Task 15 gives the final text covering all vendors. |
-| `init-handbrake/run` GPU-seam comment | Both may correct it | Comment only, no behaviour change. Task 15 Step 3; if Plan 2 already fixed it, leave its wording. |
+| `rootfs/usr/local/bin/handbrake-gpu.sh` | Both rewrite the whole file | Task 6 Steps 1 and 3 carry Plan 2's helpers and its `nvidia)` branch across, **and fix the defect described immediately below.** |
+| `Dockerfile` | Only this plan adds a package layer | No overlap. Insert where Task 3 says. |
 | `Dockerfile` `GPU_VENDOR` ENV comment | Both correct it | Task 3 Step 3; merge, keep Plan 2's NVIDIA sentence. |
-| `.github/release-notes/*.md` | May be the same file | Task 16 has two literal variants; jdp picks. |
+| `README.md` section 8 | Both rewrite it | Task 13 Step 1 gives the merge rule. Plan 2 also edits the section 1 comparison table and section 11 troubleshooting; this plan touches neither, so leave both alone. |
+| `.github/workflows/build.yml` smoke step | Only this plan adds assertions | Task 10 appends a delimited block. If a GPU block ever appears there from another plan, append inside it rather than adding a second one. |
+| `CLAUDE.md` GPU bullet | Only this plan corrects it | Task 15 gives the final text covering all vendors. |
+| `init-handbrake/run` GPU-seam comment | Both may correct it | Comment only, no behaviour change. Task 15 Step 3; if Plan 2 already fixed it, leave its wording. |
+| `docs/` capability records | Plan 2 uses `docs/hardware-encoding-nvidia.md`; this plan appends to `docs/handbrake-capabilities.md` | Deliberate: Plan 1's handoff names `docs/handbrake-capabilities.md` as the artefact GPU plans read, and this plan's findings correct that same file. Two files will exist; do not merge them, and do not duplicate content between them. |
+| `.github/release-notes/*.md` | May be the same file | Plan 2 ships `v1.1.0`. Task 16 has two literal variants; jdp picks. |
 | `rootfs/etc/s6-overlay/s6-rc.d/init-handbrake/dependencies.d/init-video` | Both may create it | Empty marker file, identical either way. Creating it twice is a no-op. |
+
+### The defect to fix while merging Plan 2's branch
+
+Plan 2 detects NVENC by grepping the **build-time** dump
+`/usr/local/share/handbrake-cli-help.txt` for `nvenc_h264`. That dump cannot
+contain it. `libhb` gates the entire hardware-encoder listing on a live
+availability probe:
+
+```c
+#if HB_PROJECT_FEATURE_NVENC
+            case HB_VCODEC_FFMPEG_NVENC_H264:
+                return hb_nvenc_h264_available();
+```
+
+The dump is recorded during `docker build`, where no NVIDIA runtime is injected,
+so `hb_nvenc_h264_available()` returns false and `nvenc_h264` is filtered out
+before the help text is printed. Plan 2's `hb_help_lists_encoder nvenc_h264`
+therefore returns false **on every machine, including one with a working
+4070 Ti Super**, and the NVIDIA branch would always fall back to software.
+
+The fix is one identifier per call site and is spelled out in Task 6 Step 3:
+swap `hb_help_lists_encoder` for this plan's `hb_has_encoder` inside the
+`nvidia)` branch, which asks the live binary instead. Keep Plan 2's
+`hb_help_lists_nvdec` exactly as it is: the `--enable-hw-decoding` help text is
+static and is **not** filtered by hardware, so reading it from the dump is
+correct there.
+
+Report this to whoever owns Plan 2 as well, so its own Task 2 expectations
+("expect `nvenc_h264` in the dump") get corrected rather than debugged on the
+hardware.
 
 ---
 
@@ -648,14 +687,22 @@ git commit -m "fix: order init-handbrake after the base init-video device-group 
   - `/config/handbrake-gpu.log` — the diagnostics report the README asks users to attach to a hardware report.
   - stdout `--encoder <id>` or empty, unchanged contract.
 
-- [ ] **Step 1: If Plan 2 has landed, save its `nvidia)` branch first**
+- [ ] **Step 1: If Plan 2 has landed, save its branch AND its helpers first**
+
+Plan 2 rewrites this same file, so there are two things to carry across, not one:
 
 ```bash
 cd /d/nextcloud/it/github/handbrake
-sed -n '/^        nvidia)/,/^            ;;$/p' rootfs/usr/local/bin/handbrake-gpu.sh
+cp rootfs/usr/local/bin/handbrake-gpu.sh /tmp/handbrake-gpu.plan2.sh
+echo "--- nvidia branch ---"
+sed -n '/^        nvidia)/,/^            ;;$/p' /tmp/handbrake-gpu.plan2.sh
+echo "--- nvidia helpers ---"
+grep -n 'HB_CLI_HELP=\|^hb_help_lists_nvdec()\|^nvidia_device_present()\|^nvidia_lib_path()\|^nvidia_smi_summary()\|^NVENC_CANDIDATES=' /tmp/handbrake-gpu.plan2.sh
 ```
 
-If that prints a branch, copy it to the clipboard now. In Step 2's file it goes **between the `none)` branch and the `intel)` branch**, unchanged. If it prints nothing, there is nothing to preserve and `nvidia` will land in the `*)` branch with an accurate message.
+Keep that copy: Step 3 pastes both pieces back. If the file has no `nvidia)`
+branch, Plan 2 has not landed, nothing needs preserving, and `nvidia` will fall
+into the `*)` branch with an accurate message until Plan 2 arrives.
 
 - [ ] **Step 2: Replace the file**
 
@@ -947,11 +994,54 @@ printf '%s' "${VENDOR}" > /run/handbrake/gpu-vendor 2>/dev/null || true
 gpu_args_for_vendor "${VENDOR}"
 ```
 
-- [ ] **Step 3: Re-insert Plan 2's `nvidia)` branch if there was one**
+- [ ] **Step 3: Re-insert Plan 2's helpers and branch, and fix its encoder lookup**
 
-If Step 1 printed a branch, paste it back **between** the `none)` branch's `;;` and the `intel)` line. Do not reformat it and do not "improve" it. Then re-run Step 1's `sed` to confirm it is present again.
+Only if Step 1 found them. Three edits, in this order:
 
-- [ ] **Step 4: Three shell traps to check before moving on**
+1. **Helpers.** From `/tmp/handbrake-gpu.plan2.sh`, copy `HB_CLI_HELP=`,
+   `NVENC_CANDIDATES=`, `hb_help_lists_nvdec()`, `nvidia_device_present()`,
+   `nvidia_lib_path()` and `nvidia_smi_summary()` into the `--- probes ---`
+   section of the new file, after `hb_have_amf_runtime`. Do **not** copy
+   `hb_help_lists_encoder()`: it is the broken one, and `hb_has_encoder` already
+   does its job correctly.
+2. **Branch.** Paste the whole `nvidia)` branch back **between** the `none)`
+   branch's `;;` and the `intel)` line, unchanged apart from edit 3.
+3. **The one-word correction.** Inside that branch, replace every
+   `hb_help_lists_encoder` with `hb_has_encoder`:
+
+   ```bash
+   cd /d/nextcloud/it/github/handbrake
+   sed -i 's/hb_help_lists_encoder/hb_has_encoder/g' rootfs/usr/local/bin/handbrake-gpu.sh
+   grep -n 'hb_help_lists_encoder\|hb_has_encoder\|hb_help_lists_nvdec' rootfs/usr/local/bin/handbrake-gpu.sh
+   ```
+
+   Expected: no `hb_help_lists_encoder` left, `hb_has_encoder` defined once and
+   called from the `nvidia`, `intel` and `amd` branches, and
+   `hb_help_lists_nvdec` still present and still reading `HB_CLI_HELP` (correct:
+   the `--enable-hw-decoding` help text is static and is not filtered by
+   hardware).
+
+Why this correction is required rather than optional: `nvenc_h264` is filtered
+out of the build-time dump on any machine without an NVIDIA runtime, which is
+every build machine, so the dump-based lookup returns false even on a working
+GPU. See "The defect to fix while merging Plan 2's branch" near the top of this
+plan for the source evidence.
+
+- [ ] **Step 4: Confirm the merged file still has exactly one of everything**
+
+```bash
+cd /d/nextcloud/it/github/handbrake
+grep -c '^gpu_args_for_vendor()' rootfs/usr/local/bin/handbrake-gpu.sh
+grep -n '^        \(none\|nvidia\|intel\|amd\|\*\))' rootfs/usr/local/bin/handbrake-gpu.sh
+grep -c '^set -eu' rootfs/usr/local/bin/handbrake-gpu.sh
+```
+
+Expected: `1`, then the five branch labels in the order `none`, `nvidia`,
+`intel`, `amd`, `*` (with `nvidia` absent if Plan 2 has not landed), then `1`.
+Two `set -eu` lines or two `case` blocks mean the paste landed in the wrong
+place.
+
+- [ ] **Step 5: Three shell traps to check before moving on**
 
 Read the file once more and confirm all three, because each of them silently breaks the container:
 
@@ -959,12 +1049,23 @@ Read the file once more and confirm all three, because each of them silently bre
 2. **`set -e` and `[ ... ] && cmd`.** A bare `[ x ] && y` that evaluates false is a failing command and kills the script. The file uses `if ... then ... fi` inside every loop for exactly this reason. Do not "simplify" those back.
 3. **`enc="$(hb_pick_encoder ...)"` always ends in `|| true`.** Without it, "no encoder found" aborts the script, `init-handbrake` empties `gpu-args` and logs a generic warning, and the user loses the specific explanation.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 cd /d/nextcloud/it/github/handbrake
 git add rootfs/usr/local/bin/handbrake-gpu.sh
 git commit -m "feat: add Intel QSV and AMD VCE branches with live HandBrake encoder detection"
+```
+
+If Step 3 ran, make the correction visible instead of burying it in this commit:
+
+```bash
+git commit --amend -m "feat: add Intel QSV and AMD VCE branches with live HandBrake encoder detection
+
+Hardware encoder ids are now read from the running HandBrakeCLI instead of the
+build-time --help dump. libhb filters hardware encoders by live availability, so
+the dump recorded during docker build never lists one, and the NVENC lookup that
+read it could never match."
 ```
 
 ---
@@ -1646,7 +1747,7 @@ cd /d/nextcloud/it/github/handbrake
 sed -n '/^## 8\. Hardware Encoding/,/^## 9\./p' README.md
 ```
 
-- If that section already documents NVENC (Plan 2 landed), **keep every NVIDIA sentence and the NVIDIA table row verbatim** and merge only the Intel and AMD material below into it.
+- If that section already documents NVENC (Plan 2 landed), **keep every NVIDIA sentence verbatim**, keep its heading numbering, and merge only the Intel and AMD material below into it: add the two table rows, add `### 8.1`/`### 8.2` after Plan 2's NVIDIA subsection, and renumber Plan 2's subsections so the sequence stays gapless. Plan 2 also rewrote the comparison table in section 1 and added troubleshooting entries to section 11; this plan changes neither, so leave both untouched.
 - If it still says "This release ships software encoding only", replace the whole section with Step 2's text and add this literal NVIDIA row to the table, directly under the `none` row: `| \`nvidia\` | not in this release yet | ❌ | — |`.
 
 - [ ] **Step 2: Replace section 8**
@@ -2103,15 +2204,17 @@ Expected: `shellcheck OK` (the edit is comment-only, so anything else means a li
 
 - [ ] **Step 1: Ask jdp which shape to use**
 
-Ask with a popup (AskUserQuestion), offering exactly these two options:
+Plan 2 ships `v1.1.0`, so the two shapes are concrete. Ask with a popup
+(AskUserQuestion), offering exactly these two options:
 
-- **One release** — fold the Intel/AMD notes into Plan 2's existing
+- **One release (`v1.1.0`)** — fold the Intel/AMD notes into Plan 2's
   `.github/release-notes/v1.1.0.md`, so NVENC, QSV and AMD ship as a single
   "hardware encoding" minor. Use Variant B.
-- **Own release** — Plan 2 shipped `v1.1.0`; Intel/AMD ship as `v1.2.0` with
-  their own notes file. Use Variant A.
+- **Own release (`v1.2.0`)** — Plan 2 already shipped `v1.1.0`; Intel and AMD
+  ship separately with their own notes file. Use Variant A.
 
-Also confirm the actual version numbers against what is already released:
+Also confirm the numbers against what is actually released, because Plan 2's tag
+is itself gated on jdp's approval and may not exist yet:
 
 ```bash
 cd /d/nextcloud/it/github/handbrake
