@@ -4,7 +4,7 @@
 
 **Goal:** Ship `junkerderprovinz/handbrake` v1.1.0 — `GPU_VENDOR=nvidia` makes every watch-folder job encode on the GPU with HandBrake's NVENC encoder, verified end-to-end on real NVIDIA hardware, and says so loudly instead of silently degrading when the GPU is not actually reachable.
 
-**Architecture:** Plan 1 left exactly one seam for this: `rootfs/usr/local/bin/handbrake-gpu.sh` turns `GPU_VENDOR` into extra `HandBrakeCLI` arguments, `init-handbrake` captures them into `/run/handbrake/gpu-args`, and `handbrake-watch.sh` splices that file into every `HandBrakeCLI` invocation. This plan adds the `nvidia` branch to `gpu_args_for_vendor()` in that one script: it probes for a real, usable GPU (NVIDIA device node plus the `libnvidia-encode.so.1` the container runtime injects), picks an NVENC encoder identifier that the bundled HandBrake build genuinely contains (read from the build-time `HandBrakeCLI --help` dump, never guessed), and emits `--encoder <id>`. No Dockerfile change is needed: the NVIDIA userspace libraries are injected at run time by the NVIDIA container runtime, which is precisely why an Ubuntu/glibc base works here where jlesage's Alpine image cannot.
+**Architecture:** Plan 1 left exactly one seam for this: `rootfs/usr/local/bin/handbrake-gpu.sh` turns `GPU_VENDOR` into extra `HandBrakeCLI` arguments, `init-handbrake` captures them into `/run/handbrake/gpu-args`, and `handbrake-watch.sh` splices that file into every `HandBrakeCLI` invocation. This plan adds the `nvidia` branch to `gpu_args_for_vendor()` in that one script: it probes for a real, usable GPU (NVIDIA device node plus the `libnvidia-encode.so.1` the container runtime injects), picks an NVENC encoder identifier that the running `HandBrakeCLI` actually offers on this machine (read from a **live** `HandBrakeCLI --help` call at container start — never from the build-time dump, and never guessed), and emits `--encoder <id>`. No Dockerfile change is needed: the NVIDIA userspace libraries are injected at run time by the NVIDIA container runtime, which is precisely why an Ubuntu/glibc base works here where jlesage's Alpine image cannot.
 
 **Tech Stack:** POSIX-ish bash (shellcheck `-S warning`), HandBrake 1.11 `HandBrakeCLI` (Ubuntu `handbrake-cli`, built with `--enable-nvenc`), NVIDIA container toolkit (`--runtime=nvidia`), Unraid Nvidia-Driver plugin, Docker, GitHub Actions (unchanged by this plan).
 
@@ -18,7 +18,7 @@
 - **No real IPs, hostnames or user data in any repo file.** The real-hardware verification runs against jdp's Unraid box; write `<unraid-host>` in every committed file and keep the real address out of the repo.
 - LF line endings for everything under `rootfs/` — enforced by `.gitattributes`. CRLF breaks the shebang inside the image.
 - **Fail loudly on misconfiguration.** `GPU_VENDOR=nvidia` without a usable GPU must print a clear, actionable error block and fall back to software encoding. It must never produce a job that dies on every file, and never silently pretend the GPU is in use.
-- **Never guess an encoder identifier.** Every encoder id comes from `/usr/local/share/handbrake-cli-help.txt` inside the image (Plan 1, Task 3 writes it; Plan 1, Task 9 records it in `docs/handbrake-capabilities.md`).
+- **Never guess an encoder identifier — and never read a hardware encoder id from the build-time dump.** Every *hardware* encoder id is looked up in a live `HandBrakeCLI --help` call made inside the running container. `libhb` filters the encoder list by a live availability probe, so `/usr/local/share/handbrake-cli-help.txt` (recorded during `docker build`, on a GPU-less builder) never lists one. That dump stays the source of truth only for **statically printed** help text such as the `--enable-hw-decoding` entry. See "Why the encoder check asks the live binary" below.
 - CI has no GPU. The workflows stay untouched: the smoke gate keeps proving the `GPU_VENDOR=none` default, the GPU path is proven by Tasks 5, 6 and 9.
 - **Never tag or publish a release without explicit approval from jdp.** Pushing to `main` and letting `:latest` rebuild is fine; cutting `v1.1.0` is gated (Task 12, Step 4).
 - Never `git add -A`. Always stage explicit paths.
@@ -57,6 +57,72 @@ Do not redefine any of this. Names are exact.
 - Log prefix for this script: `[handbrake-gpu]`. Do not invent a second prefix.
 
 Because `/run/handbrake/gpu-args` is only read by the watch daemon, **`GPU_VENDOR` affects automated watch-folder conversion only.** In the GUI the user picks the encoder themselves; NVENC simply appears in HandBrake's encoder dropdown once the driver libraries are present. Task 7 documents that distinction.
+
+---
+
+## Why the encoder check asks the live binary (read before Task 2)
+
+**This corrects an instruction inherited from Plan 1**, and it is the reason the
+encoder lookup in Task 4 is not a `grep` over the recorded help dump.
+
+`libhb` does not list every encoder it was compiled with. `hb_common_global_init()`
+gates each entry on `hb_video_encoder_is_enabled()`, which for hardware encoders
+calls the vendor's **live** availability probe before the encoder is ever added to
+the list that `hb_video_encoder_get_next()` walks — and that list is exactly what
+`HandBrakeCLI --help` prints under `-e, --encoder`
+(HandBrake 1.11.x, `libhb/common.c`):
+
+```c
+#if HB_PROJECT_FEATURE_NVENC
+            case HB_VCODEC_FFMPEG_NVENC_H264:
+                return hb_nvenc_h264_available();
+            case HB_VCODEC_FFMPEG_NVENC_H265:
+            case HB_VCODEC_FFMPEG_NVENC_H265_10BIT:
+                return hb_nvenc_h265_available();
+#endif
+```
+
+So an encoder appears in `--help` only when it is **compiled in AND usable on the
+hardware present right now**. Two consequences drive this plan:
+
+1. **`/usr/local/share/handbrake-cli-help.txt` can never contain `nvenc_h264`.**
+   It is recorded during `docker build`, where no NVIDIA runtime is injected, so
+   `hb_nvenc_h264_available()` returns false and every `nvenc_*` id is filtered
+   out before the text is written. A dump-based lookup would therefore fail on
+   **every** machine, including one with a working RTX 4070 Ti SUPER, and the
+   `nvidia` branch would always fall through to software encoding — the exact
+   opposite of this plan's purpose.
+2. **Asking the live binary is simultaneously the identifier lookup and the
+   hardware probe.** It satisfies "never guess an encoder identifier" more
+   strictly than the dump ever did, because a listed id is proof that HandBrake
+   itself can currently use it.
+
+**The `--enable-hw-decoding` help text is a different case and is NOT affected.**
+It is a static literal in `test/test.c`'s `ShowHelp()`, guarded only by a
+compile-time preprocessor conditional, with no runtime probe anywhere near it:
+
+```c
+"   --enable-hw-decoding <string>                                        \n"
+#if defined( __APPLE_CC__ )
+"                           Use 'videotoolbox' to enable VideoToolbox    \n"
+#else
+"                           Use 'nvdec' to enable NVDec                  \n"
+"                           Use 'qsv' to enable QSV decoding             \n"
+#endif
+```
+
+The dump and the live binary are the same binary, so for compile-time-gated text
+they print identical output. `hb_help_lists_nvdec()` therefore **keeps** reading
+the dump: it is correct there, it costs nothing, and it is only ever used to
+decide whether to print an informational line. Do not "consistency-fix" it onto
+the live probe.
+
+Plan 3 (`docs/superpowers/plans/2026-08-12-handbrake-intel-amd-gpu.md`) reached
+the same conclusion independently while designing the QSV/VCE branches and
+records it as finding 1 of its research section. Task 4 below uses Plan 3's
+helper names (`hb_load_encoders`, `hb_has_encoder`, `hb_pick_encoder`) with
+identical semantics, so that when the two branches meet in one file there is one
+probe, not two.
 
 ---
 
@@ -110,21 +176,40 @@ Every string this plan later relies on is read from the built image here. Do not
 - Create: `d:\nextcloud\it\github\handbrake\docs\hardware-encoding-nvidia.md`
 
 **Interfaces:**
-- Consumes: `handbrake:dev` (Task 1), the in-image dump `/usr/local/share/handbrake-cli-help.txt` (Plan 1, Task 3).
-- Produces: the confirmed NVENC encoder identifiers, the confirmed `--enable-hw-decoding` spelling, and the confirmed hardware-preset names that Tasks 4 and 7 use.
+- Consumes: `handbrake:dev` (Task 1), the in-image dump `/usr/local/share/handbrake-cli-help.txt` (Plan 1, Task 3) for the **statically printed** help text only, and the live `HandBrakeCLI` binary for anything hardware-filtered.
+- Produces: the recorded proof that hardware encoders are absent from both lists on a GPU-less machine, the confirmed `--enable-hw-decoding` spelling, and the confirmed hardware-preset names that Tasks 4 and 7 use.
 
-- [ ] **Step 1: List the NVENC encoder identifiers this build really contains**
+- [ ] **Step 1: Record what the encoder lists actually say on this GPU-less machine**
 
-This is the exact extraction the script will perform at run time (section-scoped, whitespace/comma tolerant), so its output is also a test of the matcher:
+Read "Why the encoder check asks the live binary" above first. The expected result of this step is **no `nvenc_*` identifiers anywhere**, and that is a pass, not a failure — it is the measurement that justifies the live probe in Task 4. Run all three commands and record all three outputs.
+
+**1a — the build-time dump** (this is the extraction the *old* dump-based lookup performed, kept here only to document that it cannot work):
 
 ```bash
 docker run --rm --entrypoint sh handbrake:dev -c \
   'sed -n "/-e, --encoder/,/^[[:space:]]*-[a-zA-Z-]/p" /usr/local/share/handbrake-cli-help.txt \
      | tr " ,\t" "\n\n\n" | grep -E "^nvenc" | sort -u'
 ```
-Expected: one identifier per line, all beginning with `nvenc_`. Ubuntu builds `handbrake-cli` with `--enable-nvenc`, so this list must not be empty. **If it is empty, stop:** re-run without the `grep` to see the raw encoder block, and report — every later task depends on at least one NVENC identifier existing.
+Expected: **empty.** The dump was written during `docker build` on a GPU-less builder, where `hb_nvenc_h264_available()` returns false, so `libhb` filtered every `nvenc_*` id out before printing. If this is *not* empty, the builder had an NVIDIA runtime attached — record that fact and report it, because it would change nothing in the script (the live probe is still correct) but it would mean this image is not reproducible.
 
-Record the exact lines; they go into Step 6.
+**1b — the live encoder list, extracted exactly as `hb_load_encoders()` will at run time** (section-scoped, one id per line, whitespace-trimmed), so its output also tests the matcher:
+
+```bash
+docker run --rm --entrypoint sh handbrake:dev -c \
+  "HandBrakeCLI --help 2>/dev/null | awk '/^[[:space:]]*-e, --encoder[[:space:]]/{f=1;next} f&&/^[[:space:]]*-/{f=0} f' \
+     | sed 's/^[[:space:]]*//;s/[[:space:]]*\$//' | grep -v '^\$'"
+```
+Expected: the software encoders (`x264`, `x265`, `svt_av1`, …) and **no** `nvenc_*`, for the same reason — this dev box has no NVIDIA runtime either. The decisive check is that the list is **non-empty and parses into one id per line**: that proves the extraction works, which is the part Task 4 depends on. An empty list means the awk section anchor does not match this build's help layout — stop and report that, because the probe would then be blind.
+
+**1c — evidence that the binary really was compiled with NVENC**, which is GPU-independent (the identifiers are string literals inside the binary whether or not the hardware probe passes):
+
+```bash
+docker run --rm --entrypoint sh handbrake:dev -c \
+  'grep -a -o -E "nvenc_(h264|h265|av1)" "$(command -v HandBrakeCLI)" | sort -u'
+```
+Expected: `nvenc_h264`, `nvenc_h265` and possibly `nvenc_av1` — Ubuntu passes `--enable-nvenc` on amd64. If this is empty **and** 1b is empty, the build genuinely has no NVENC support and Task 9 cannot pass; stop and report before spending time on the hardware box. (Absence here is weaker evidence than presence: `libhb` may be linked as a shared object rather than statically. If it is empty, confirm against `docs/handbrake-capabilities.md` from Plan 1 rather than concluding anything.)
+
+Record all three outputs; they go into Step 6. **The authoritative `nvenc_*` identifier list for this build is recorded on real hardware in Task 9, Step 6** — that is the first machine where `libhb` will admit to having them.
 
 - [ ] **Step 2: Record the valid `--encoder-preset` names for the first NVENC encoder**
 
@@ -132,9 +217,12 @@ Record the exact lines; they go into Step 6.
 docker run --rm --entrypoint sh handbrake:dev -c \
   'HandBrakeCLI --encoder-preset-list nvenc_h264 2>&1'
 ```
-Expected: HandBrake prints the preset names it accepts for that encoder. If Step 1 did not list `nvenc_h264`, run this with the first identifier Step 1 actually printed instead.
+Expected on this GPU-less box: **most likely an "unrecognized encoder" style error or empty output**, for exactly the reason Step 1 recorded — `--encoder-preset-list` resolves its argument through the same hardware-filtered encoder table, so an encoder that `--help` will not list cannot be looked up by name either. That is not a failure of this step.
 
-This matters because the default preset `General/Very Fast 1080p30` carries the x264 speed name `veryfast`, which is **not** in this list. Record the output; Task 7 documents how a user picks a valid one.
+- If it prints preset names, record them now.
+- If it errors or prints nothing, **record that verbatim and move on.** Task 9, Step 6 re-runs this one command on the real GPU box, where the encoder resolves, and Task 10 fills the recorded output in. Do not try to work around it here, and do not fall back to naming presets from memory.
+
+This matters because the default preset `General/Very Fast 1080p30` carries the x264 speed name `veryfast`, which is **not** in this list. Task 7 documents how a user picks a valid one.
 
 - [ ] **Step 3: Record the hardware-decoding option spelling**
 
@@ -143,6 +231,8 @@ docker run --rm --entrypoint sh handbrake:dev -c \
   'grep -A3 -- "--enable-hw-decoding" /usr/local/share/handbrake-cli-help.txt'
 ```
 Expected: the help entry for `--enable-hw-decoding`, whose text names `nvdec`. Record it verbatim.
+
+**The dump is the right source here, unlike Step 1.** This help entry is a static literal in `ShowHelp()` gated only by a compile-time `#if`, not by a hardware probe, so the dump and a live `--help` print it identically. This is the one place `handbrake-gpu.sh` still reads the dump, and Task 4 keeps it that way on purpose.
 
 - [ ] **Step 4: Record HandBrake's own NVENC presets, if this build ships any**
 
@@ -178,6 +268,14 @@ HandBrake version:
 
 ## 1. NVENC encoders in this build
 
+`libhb` lists a hardware encoder in `--help` only when it is **compiled in AND
+usable on the hardware present right now**: `hb_video_encoder_is_enabled()` calls
+`hb_nvenc_h264_available()` before the encoder ever reaches the list that
+`--help` prints (`libhb/common.c`). Two things follow, and both were measured.
+
+**The build-time dump can never list one.** It is written during `docker build`,
+on a machine with no NVIDIA runtime:
+
 ```sh
 docker run --rm --entrypoint sh handbrake:dev -c \
   'sed -n "/-e, --encoder/,/^[[:space:]]*-[a-zA-Z-]/p" /usr/local/share/handbrake-cli-help.txt \
@@ -185,11 +283,39 @@ docker run --rm --entrypoint sh handbrake:dev -c \
 ```
 
 ```text
-<paste the output of Step 1>
+<paste the output of Step 1a — expected to be empty>
 ```
 
-`handbrake-gpu.sh` picks the first identifier from its own preference list that
-appears in this dump. It never hardcodes one.
+**A live `--help` on a GPU-less machine says the same thing**, which is why the
+absence above is a property of the hardware, not of the build:
+
+```sh
+docker run --rm --entrypoint sh handbrake:dev -c \
+  "HandBrakeCLI --help 2>/dev/null | awk '/^[[:space:]]*-e, --encoder[[:space:]]/{f=1;next} f&&/^[[:space:]]*-/{f=0} f' \
+     | sed 's/^[[:space:]]*//;s/[[:space:]]*\$//' | grep -v '^\$'"
+```
+
+```text
+<paste the output of Step 1b>
+```
+
+**The binary was nevertheless built with NVENC** — the identifiers are string
+literals inside it regardless of the hardware probe:
+
+```sh
+docker run --rm --entrypoint sh handbrake:dev -c \
+  'grep -a -o -E "nvenc_(h264|h265|av1)" "$(command -v HandBrakeCLI)" | sort -u'
+```
+
+```text
+<paste the output of Step 1c>
+```
+
+So `handbrake-gpu.sh` asks the **running** `HandBrakeCLI` at container start and
+picks the first identifier from its preference list that the binary offers *on
+that machine*. It never hardcodes an identifier and never reads the dump for
+this. One `--help` call is the identifier lookup and the hardware probe at the
+same time. The list as it appears on real NVIDIA hardware is in section 7.
 
 ## 2. Valid `--encoder-preset` values for NVENC
 
@@ -326,8 +452,11 @@ Source for the driver requirement:
    container was started through the NVIDIA container runtime;
 2. `libnvidia-encode.so.1` is present — proves `NVIDIA_DRIVER_CAPABILITIES`
    includes `video`;
-3. the bundled HandBrake build lists an NVENC encoder in
-   `/usr/local/share/handbrake-cli-help.txt`.
+3. the **running** `HandBrakeCLI` lists an NVENC encoder in a live `--help` call
+   — HandBrake only lists a hardware encoder it can actually use right now, so
+   this single check covers "the build has NVENC" and "the driver/GPU can serve
+   it" at once. The build-time help dump is deliberately not used here: it is
+   recorded without a GPU and never lists a hardware encoder.
 
 Each failing check logs its own error block naming the exact fix, then falls back
 to software encoding for that container start. The effective state is visible at
@@ -365,7 +494,7 @@ git commit -m "docs: record the host-side NVIDIA runtime requirements for NVENC"
 - Modify: `d:\nextcloud\it\github\handbrake\rootfs\usr\local\bin\handbrake-gpu.sh` — the whole file is rewritten below. (Line numbers are not quoted on purpose: this file is created by Plan 1, Task 6, Step 1, and its final line numbers depend on that commit. The anchors are the `log()` helper block above `VENDOR_RAW=` and the `gpu_args_for_vendor()` function.) Nothing outside this file changes.
 
 **Interfaces:**
-- Consumes: `GPU_VENDOR` (argument `$1`, normalised by the existing `case` block), `AUTOMATED_CONVERSION_PRESET` from the container environment, `/usr/local/share/handbrake-cli-help.txt`, and the driver libraries the NVIDIA container runtime injects.
+- Consumes: `GPU_VENDOR` (argument `$1`, normalised by the existing `case` block), `AUTOMATED_CONVERSION_PRESET` from the container environment, a live `HandBrakeCLI --help` call for the encoder list, `/usr/local/share/handbrake-cli-help.txt` for the static `--enable-hw-decoding` text only, and the driver libraries the NVIDIA container runtime injects.
 - Produces: on stdout, either an empty string (software) or `--encoder <nvenc id>`; on stderr, the `[handbrake-gpu]` decision block. `init-handbrake` and `handbrake-watch.sh` need no change whatsoever.
 
 - [ ] **Step 1: Replace `rootfs/usr/local/bin/handbrake-gpu.sh` with this exact content**
@@ -391,18 +520,32 @@ git commit -m "docs: record the host-side NVIDIA runtime requirements for NVENC"
 # themselves; NVENC shows up in HandBrake's own encoder list as soon as the
 # driver libraries are present.
 #
+# HOW AN ENCODER IS FOUND: BY ASKING THE RUNNING HANDBRAKE
+#   libhb lists a hardware encoder in --help only when it is BOTH compiled in
+#   AND usable on the hardware present right now (libhb/common.c:
+#   hb_video_encoder_is_enabled() -> hb_nvenc_h264_available()). One --help call
+#   is therefore the identifier lookup and the hardware probe at the same time,
+#   and no encoder id is ever hardcoded into an argument.
+#
+#   Do NOT use the build-time dump /usr/local/share/handbrake-cli-help.txt for
+#   this. It is recorded during `docker build` on a machine with no GPU, so it
+#   never contains a single hardware encoder and the lookup would fail even on a
+#   working GPU. See docs/hardware-encoding-nvidia.md section 1.
+#
 # EXTENSION POINT — this is the ONLY place a GPU plan needs to touch:
 #   * add the vendor's branch to gpu_args_for_vendor()
-#   * emit the encoder identifier taken from
-#     /usr/local/share/handbrake-cli-help.txt (never a guessed name)
+#   * give it a candidate list and resolve it with hb_pick_encoder (never a
+#     guessed name, never the build-time dump)
 # The watch daemon and the init oneshot need no changes at all.
 # ---------------------------------------------------------------------------
 set -eu
 
 log() { echo "[handbrake-gpu] $*" >&2; }
 
-# Build-time dump of `HandBrakeCLI --help` (written by the Dockerfile). The
-# single source of truth for what this build can actually encode.
+# Build-time dump of `HandBrakeCLI --help` (written by the Dockerfile). Valid
+# ONLY for help text that libhb prints unconditionally, such as the
+# --enable-hw-decoding entry. It is NOT valid for the encoder list — see the
+# header comment above and hb_load_encoders() below.
 HB_CLI_HELP="/usr/local/share/handbrake-cli-help.txt"
 
 # NVENC encoder preference order. H.264 comes FIRST on purpose: the default
@@ -412,22 +555,79 @@ HB_CLI_HELP="/usr/local/share/handbrake-cli-help.txt"
 # older TV refuses to play. Anyone who wants HEVC appends
 # "--encoder nvenc_h265" to AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS, which
 # the watch daemon splices in AFTER these arguments, so the later value wins.
-NVENC_CANDIDATES="nvenc_h264 nvenc_h265"
+NVENC_CANDIDATES=(nvenc_h264 nvenc_h265)
 
 # --- capability probes ------------------------------------------------------
 
-hb_help_lists_encoder() {
-    # True when $1 appears as an encoder identifier in the -e/--encoder block of
-    # the recorded help dump. Tolerates both help layouts (one id per line and
-    # comma-separated) by splitting the block on spaces, commas and tabs.
-    [ -r "${HB_CLI_HELP}" ] || return 1
-    sed -n '/-e, --encoder/,/^[[:space:]]*-[a-zA-Z-]/p' "${HB_CLI_HELP}" \
-        | tr ' ,\t' '\n\n\n' \
-        | grep -qxF -- "$1"
+# Cache of the encoder ids the running HandBrakeCLI offers on THIS machine.
+# HB_ENCODERS_LOADED is a separate flag on purpose: "the list is empty" is a
+# legitimate answer (a build with no hardware encoders), so emptiness must not
+# be used as "not loaded yet". Overloading it would re-run HandBrakeCLI --help
+# once per candidate and print the warning below once per candidate too.
+HB_ENCODERS=""
+HB_ENCODERS_LOADED=0
+
+# hb_load_encoders — ask the real binary, once, what it can encode here.
+#
+# This is the live hardware probe, not a lookup in a recorded file: libhb only
+# lists nvenc_* after hb_nvenc_h264_available() has said yes, so an id appearing
+# here is proof that HandBrake can use it right now. The build-time dump is
+# recorded without a GPU and would always answer "no".
+#
+# Call this from the PARENT shell before using hb_pick_encoder. hb_pick_encoder
+# is used inside a command substitution, which runs in a subshell, so a cache
+# filled there would be thrown away and every candidate would cost another
+# HandBrakeCLI --help call. Filling it here means exactly one call per start.
+hb_load_encoders() {
+    if [ "${HB_ENCODERS_LOADED}" = "1" ]; then
+        return 0
+    fi
+    HB_ENCODERS_LOADED=1
+    local raw=""
+    raw="$(HandBrakeCLI --help 2>/dev/null || true)"
+    HB_ENCODERS="$(printf '%s\n' "${raw}" | awk '
+        /^[[:space:]]*-e, --encoder[[:space:]]/ { inlist = 1; next }
+        inlist && /^[[:space:]]*-/              { inlist = 0 }
+        inlist {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if ($0 != "") print
+        }
+    ')"
+    if [ -z "${HB_ENCODERS}" ]; then
+        log "WARNING: 'HandBrakeCLI --help' produced no encoder list — hardware detection cannot run."
+    fi
+}
+
+hb_has_encoder() {
+    # True when the running HandBrakeCLI offers encoder id $1 on this machine.
+    hb_load_encoders
+    printf '%s\n' "${HB_ENCODERS}" | grep -qxF -- "$1"
+}
+
+# hb_pick_encoder <id> [id...] — print the first id the binary offers here and
+# return 0; return 1 when it offers none of them.
+# Callers MUST append '|| true': under 'set -e' a command substitution that
+# returns non-zero would otherwise kill the script before the error block runs.
+hb_pick_encoder() {
+    local id
+    for id in "$@"; do
+        if hb_has_encoder "${id}"; then
+            printf '%s' "${id}"
+            return 0
+        fi
+    done
+    return 1
 }
 
 hb_help_lists_nvdec() {
     # True when this build advertises --enable-hw-decoding with nvdec.
+    #
+    # This one reads the build-time dump ON PURPOSE, and that is correct here:
+    # the --enable-hw-decoding help text is a static literal in ShowHelp(),
+    # guarded only by a compile-time #if and never by a hardware probe, so the
+    # dump and a live --help print it identically. Decode capability and the
+    # hardware ENCODER list are different things in HandBrake's help output.
+    # Do not "consistency-fix" this onto hb_has_encoder.
     [ -r "${HB_CLI_HELP}" ] || return 1
     grep -A3 -- '--enable-hw-decoding' "${HB_CLI_HELP}" 2>/dev/null \
         | grep -qi 'nvdec'
@@ -488,7 +688,7 @@ case "${VENDOR}" in
 esac
 
 gpu_args_for_vendor() {
-    local candidate="" encoder="" lib_encode="" lib_decode="" detail="" args=""
+    local encoder="" lib_encode="" lib_decode="" detail="" args=""
     case "$1" in
         none)
             printf ''
@@ -521,18 +721,23 @@ gpu_args_for_vendor() {
                 return 0
             fi
 
-            # -- 3) Does THIS HandBrake build have an NVENC encoder? -----------
-            for candidate in ${NVENC_CANDIDATES}; do
-                if hb_help_lists_encoder "${candidate}"; then
-                    encoder="${candidate}"
-                    break
-                fi
-            done
+            # -- 3) Does the RUNNING HandBrakeCLI offer an NVENC encoder here? -
+            # Asking the live binary is both the identifier lookup and the final
+            # hardware check: libhb hides nvenc_* until its own availability
+            # probe passes. hb_load_encoders runs in THIS shell (not inside the
+            # command substitution below) so the --help call happens once.
+            hb_load_encoders
+            encoder="$(hb_pick_encoder "${NVENC_CANDIDATES[@]}" || true)"
             if [ -z "${encoder}" ]; then
                 printf ''
-                log "ERROR: GPU_VENDOR=nvidia and the GPU is usable, but this HandBrake build contains no"
-                log "       NVENC encoder (looked for '${NVENC_CANDIDATES}' in ${HB_CLI_HELP})."
-                log "       Fix: the image has to be rebuilt from a HandBrake package built with --enable-nvenc."
+                log "ERROR: GPU_VENDOR=nvidia, the NVIDIA device node and libnvidia-encode.so.1 are both"
+                log "       present, but HandBrakeCLI offers none of '${NVENC_CANDIDATES[*]}' on this machine."
+                log "       HandBrake lists a hardware encoder only when it is compiled in AND currently"
+                log "       usable, so one of these holds:"
+                log "         * the NVIDIA driver is older than HandBrake's documented NVENC minimum"
+                log "         * this GPU has no usable NVENC block (too old, or it is a model without one)"
+                log "         * this build was not built with --enable-nvenc for this architecture"
+                log "       Encoders HandBrakeCLI offers here: $(printf '%s' "${HB_ENCODERS}" | tr '\n' ' ')"
                 log "FALLING BACK TO SOFTWARE ENCODING for this container start."
                 return 0
             fi
@@ -586,7 +791,17 @@ printf '%s' "${VENDOR}" > /run/handbrake/gpu-vendor 2>/dev/null || true
 gpu_args_for_vendor "${VENDOR}"
 ```
 
-Note the two deliberate refactors inside this same file: the `log()` helper replaces the repeated `echo "[handbrake-gpu] …" >&2` lines (DRY, identical output), and the vendor-normalisation `case` now logs through it. The `none` branch, the catch-all branch, the stdout/stderr contract and the `/run/handbrake/gpu-vendor` write are byte-for-byte the behaviour Plan 1 defined.
+Note the deliberate refactors inside this same file: the `log()` helper replaces the repeated `echo "[handbrake-gpu] …" >&2` lines (DRY, identical output), and the vendor-normalisation `case` now logs through it. The `none` branch, the catch-all branch, the stdout/stderr contract and the `/run/handbrake/gpu-vendor` write are byte-for-byte the behaviour Plan 1 defined.
+
+**All three probes now answer the same kind of question the same way — "what is true in this container right now".** The device check reads `/dev`, the library check reads the filesystem and `ldconfig`, and the encoder check asks the binary. None of them consults a value recorded at build time. That symmetry is the point: a build-time answer to a run-time question is what made the original dump-based lookup wrong (see "Why the encoder check asks the live binary"). `hb_help_lists_nvdec()` is the single, documented exception, because the text it reads is compile-time, not hardware-filtered.
+
+Three shell traps in this file, each of which breaks the container silently:
+
+1. **`encoder="$(hb_pick_encoder … || true)"` must keep its `|| true`.** Without it, `set -e` kills the script on "no encoder found", `init-handbrake` writes an empty `gpu-args` and logs a generic warning, and the user never sees the specific error block that names the fix.
+2. **`hb_load_encoders` must be called from `gpu_args_for_vendor()` itself**, not left to `hb_has_encoder`. The `$( … )` around `hb_pick_encoder` is a subshell; a cache filled in there dies with it, and each candidate would spawn another `HandBrakeCLI --help`.
+3. **Nothing new may reach stdout.** stdout is a command line, not a log. `HandBrakeCLI --help` is captured into a variable and its stderr is discarded precisely so it cannot leak into `/run/handbrake/gpu-args`.
+
+Also note what the branch deliberately does **not** do: it does not run the probe as `abc` via `s6-setuidgid`. Plan 3 adds that refinement for Intel/AMD, where the render node is group-gated and it also adds the `init-video` ordering edge that makes it meaningful; `/dev/nvidia*` is world-accessible and this plan changes no s6 service, so the plain call is the honest one here. On merge, Plan 3's version supersedes it.
 
 Also note what the branch deliberately does **not** emit: no `--encoder-preset` (HandBrake maps an unknown software preset name onto its own NVENC default, and forcing one would silently override the user's speed choice — Task 2, Step 2 recorded the valid names for the README instead), and no `--enable-hw-decoding nvdec` (Task 2, Step 6, section 3 records HandBrake's own reason). Do not "improve" either of them back in.
 
@@ -713,50 +928,74 @@ rm -f /tmp/hb-nogpu.mkv
 
 ### Task 6: Prove the selection logic with a faked NVIDIA environment
 
-The fail-loud path is now proven; this proves the opposite branch — that when the probes are satisfied the script picks a real encoder and emits the right argument string. No GPU is needed: the probes look for a device node and a library file, and both can be faked inside a throwaway container.
+The fail-loud path is now proven; this proves the opposite branch — that when all three probes are satisfied the script picks a real encoder and emits the right argument string.
+
+**Each probe is faked at its own input boundary, and there are three, not two.** `/dev` inside a container is a writable tmpfs, so a plain file at `/dev/nvidiactl` satisfies the device probe, and a stub file in the multiarch library directory satisfies the library probe — neither is ever opened by this script. The third probe asks `HandBrakeCLI --help`, so it is faked by shadowing `HandBrakeCLI` on `PATH` with a script that prints a synthetic help block. That is the only way to exercise the success path off real hardware: the whole point of the live probe is that a GPU-less machine's real `HandBrakeCLI` will not list `nvenc_*` (Task 2, Step 1b measured exactly that).
+
+**What this task does and does not prove.** It proves the selection logic, the argument string, the preset guard and the word-splitting round trip — all pure shell behaviour. It proves nothing about NVENC actually working. That is Task 9's job, on the real GPU, and no amount of faking here substitutes for it.
 
 **Files:**
 - Modify: none. Verification only.
 
 **Interfaces:**
-- Consumes: `handbrake:dev` from Task 5, and the NVENC identifier recorded in Task 2, Step 1.
-- Produces: proof of the encoder pick, of the argument string, and of the "preset already selects NVENC" rule.
+- Consumes: `handbrake:dev` from Task 5.
+- Produces: proof of the encoder pick, of the argument string, of the "preset already selects NVENC" rule, and of the third error block.
 
-- [ ] **Step 1: Fake a usable NVIDIA container and read the emitted arguments**
+- [ ] **Step 1: Fake a fully usable NVIDIA container and read the emitted arguments**
 
-`/dev` inside a container is a writable tmpfs, so a plain file at `/dev/nvidiactl` satisfies the `-e` probe, and a stub file in the multiarch library directory satisfies the library probe. Neither is ever executed by this script.
+The stub prints just enough of a real `--help` for the `-e, --encoder` section anchor to match. It deliberately lists `x264` alongside the NVENC ids, so the run also proves the matcher selects by exact id rather than picking the first line it sees.
 
 ```bash
 docker run --rm --entrypoint sh handbrake:dev -c '
   set -e
-  mkdir -p /run/handbrake
+  mkdir -p /run/handbrake /tmp/hbstub
   : > /dev/nvidiactl
   libdir=$(dirname "$(find /usr/lib -maxdepth 2 -name libc.so.6 | head -n1)")
   echo "faking the driver library in ${libdir}"
   : > "${libdir}/libnvidia-encode.so.1"
+  cat > /tmp/hbstub/HandBrakeCLI <<STUB
+#!/bin/sh
+echo "   -e, --encoder <string>  Select video encoder:"
+echo "                               x264"
+echo "                               x265"
+echo "                               nvenc_h264"
+echo "                               nvenc_h265"
+echo "   -q, --quality <float>   Set video quality"
+STUB
+  chmod 0755 /tmp/hbstub/HandBrakeCLI
+  export PATH=/tmp/hbstub:$PATH
   /usr/local/bin/handbrake-gpu.sh nvidia > /tmp/args 2>/tmp/logs
   echo "exit=$?"
   echo "args=[$(cat /tmp/args)]"
   cat /tmp/logs
 '
 ```
-Expected: the fake library lands in the multiarch directory (`/usr/lib/x86_64-linux-gnu` on amd64, `/usr/lib/aarch64-linux-gnu` on arm64 — if it prints `.` instead, `libc.so.6` was not found and the rest of this step is meaningless), then `exit=0`, `args=[--encoder nvenc_h264]` (or the first identifier Task 2, Step 1 recorded if this build has no `nvenc_h264`), and a log block containing:
+Expected: the fake library lands in the multiarch directory (`/usr/lib/x86_64-linux-gnu` on amd64, `/usr/lib/aarch64-linux-gnu` on arm64 — if it prints `.` instead, `libc.so.6` was not found and the rest of this step is meaningless), then `exit=0`, `args=[--encoder nvenc_h264]`, and a log block containing:
 ```
 [handbrake-gpu] GPU acceleration: NVIDIA NVENC (no nvidia-smi in this container; add the 'utility'
 [handbrake-gpu] encoder library: /usr/lib/<arch>/libnvidia-encode.so.1
 [handbrake-gpu] HandBrakeCLI arguments: --encoder nvenc_h264
 [handbrake-gpu] NOTE: every watch-folder job now encodes with 'nvenc_h264' and overrides the video
 ```
+`nvenc_h264` and not `x264` is the assertion that matters here: it proves `hb_pick_encoder` walks `NVENC_CANDIDATES` in preference order and matches whole ids.
 
 - [ ] **Step 2: A preset that already selects NVENC is left alone**
 
 ```bash
 docker run --rm --entrypoint sh -e AUTOMATED_CONVERSION_PRESET='Hardware/H.265 NVENC 1080p' handbrake:dev -c '
   set -e
-  mkdir -p /run/handbrake
+  mkdir -p /run/handbrake /tmp/hbstub
   : > /dev/nvidiactl
   libdir=$(dirname "$(find /usr/lib -maxdepth 2 -name libc.so.6 | head -n1)")
   : > "${libdir}/libnvidia-encode.so.1"
+  cat > /tmp/hbstub/HandBrakeCLI <<STUB
+#!/bin/sh
+echo "   -e, --encoder <string>  Select video encoder:"
+echo "                               nvenc_h264"
+echo "   -q, --quality <float>   Set video quality"
+STUB
+  chmod 0755 /tmp/hbstub/HandBrakeCLI
+  export PATH=/tmp/hbstub:$PATH
   /usr/local/bin/handbrake-gpu.sh nvidia > /tmp/args 2>/tmp/logs
   echo "args=[$(cat /tmp/args)]"
   grep "already selects" /tmp/logs
@@ -767,6 +1006,8 @@ Expected: `args=[]` and the line
 
 - [ ] **Step 3: A device node without the library is reported as a capabilities problem**
 
+No stub needed: the script must fail at probe 2 and never reach the encoder question.
+
 ```bash
 docker run --rm --entrypoint sh handbrake:dev -c '
   mkdir -p /run/handbrake
@@ -776,18 +1017,48 @@ docker run --rm --entrypoint sh handbrake:dev -c '
   cat /tmp/logs
 '
 ```
-Expected: `args=[]` and the error block naming `libnvidia-encode.so.1` and the fix `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`. This is the second-most-likely user mistake after a missing `--runtime=nvidia`, and it must not be reported as "no GPU".
+Expected: `args=[]` and the error block naming `libnvidia-encode.so.1` and the fix `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`. This is the second-most-likely user mistake after a missing `--runtime=nvidia`, and it must not be reported as "no GPU". It must also **not** mention the encoder list — reaching probe 3 here would mean the ordering broke.
 
-- [ ] **Step 4: The emitted string survives the watch daemon's word splitting**
+- [ ] **Step 4: A usable-looking GPU whose HandBrake offers no NVENC hits the third error block**
+
+This is the branch the old dump-based lookup could never distinguish, and on a GPU-less machine it is reachable for real — fake the device and the library but leave the genuine `HandBrakeCLI` in place, and the live probe correctly refuses:
+
+```bash
+docker run --rm --entrypoint sh handbrake:dev -c '
+  mkdir -p /run/handbrake
+  : > /dev/nvidiactl
+  libdir=$(dirname "$(find /usr/lib -maxdepth 2 -name libc.so.6 | head -n1)")
+  : > "${libdir}/libnvidia-encode.so.1"
+  /usr/local/bin/handbrake-gpu.sh nvidia > /tmp/args 2>/tmp/logs
+  echo "args=[$(cat /tmp/args)]"
+  cat /tmp/logs
+'
+```
+Expected: `args=[]`, and an error block that
+- names the encoders that *were* offered (the software list from Task 2, Step 1b) on the `Encoders HandBrakeCLI offers here:` line,
+- lists the three possible causes (driver too old, no usable NVENC block, not built with `--enable-nvenc`),
+- ends with `FALLING BACK TO SOFTWARE ENCODING for this container start.`
+
+It must **not** claim the device or the library is missing — those probes passed. Seeing a populated software encoder list on that line is also the proof that `hb_load_encoders` really ran the binary and parsed its output.
+
+- [ ] **Step 5: The emitted string survives the watch daemon's word splitting**
 
 `handbrake-watch.sh` reads the file with `read -r -a`, which splits on whitespace. Prove the round trip:
 
 ```bash
 docker run --rm --entrypoint bash handbrake:dev -c '
+  mkdir -p /run/handbrake /tmp/hbstub
   : > /dev/nvidiactl
   libdir=$(dirname "$(find /usr/lib -maxdepth 2 -name libc.so.6 | head -n1)")
   : > "${libdir}/libnvidia-encode.so.1"
-  mkdir -p /run/handbrake
+  cat > /tmp/hbstub/HandBrakeCLI <<STUB
+#!/bin/sh
+echo "   -e, --encoder <string>  Select video encoder:"
+echo "                               nvenc_h264"
+echo "   -q, --quality <float>   Set video quality"
+STUB
+  chmod 0755 /tmp/hbstub/HandBrakeCLI
+  export PATH=/tmp/hbstub:$PATH
   /usr/local/bin/handbrake-gpu.sh nvidia > /run/handbrake/gpu-args 2>/dev/null
   read -r -a HB_GPU_ARGS <<< "$(cat /run/handbrake/gpu-args)"
   echo "count=${#HB_GPU_ARGS[@]}"
@@ -800,6 +1071,34 @@ count=2
 arg: --encoder
 arg: nvenc_h264
 ```
+
+- [ ] **Step 6: The probe runs exactly once per container start**
+
+A regression here is invisible in the output but costs a `HandBrakeCLI --help` per candidate. Count the invocations by making the stub keep a tally:
+
+```bash
+docker run --rm --entrypoint sh handbrake:dev -c '
+  mkdir -p /run/handbrake /tmp/hbstub
+  : > /dev/nvidiactl
+  libdir=$(dirname "$(find /usr/lib -maxdepth 2 -name libc.so.6 | head -n1)")
+  : > "${libdir}/libnvidia-encode.so.1"
+  cat > /tmp/hbstub/HandBrakeCLI <<STUB
+#!/bin/sh
+echo x >> /tmp/hbstub/calls
+echo "   -e, --encoder <string>  Select video encoder:"
+echo "                               nvenc_h265"
+echo "   -q, --quality <float>   Set video quality"
+STUB
+  chmod 0755 /tmp/hbstub/HandBrakeCLI
+  export PATH=/tmp/hbstub:$PATH
+  /usr/local/bin/handbrake-gpu.sh nvidia > /tmp/args 2>/dev/null
+  echo "args=[$(cat /tmp/args)]"
+  echo "help calls=$(wc -l < /tmp/hbstub/calls)"
+'
+```
+Expected: `args=[--encoder nvenc_h265]` (the second candidate, proving the preference walk continues past a missing first choice) and `help calls=1`. A count of `2` means `hb_load_encoders` was left to be called from inside the `$( … )` subshell and the cache is being discarded.
+
+Re-run the same command with the two `echo "   … nvenc_h265"` lines deleted from the stub, so the encoder list comes back with no NVENC in it. Expected: `args=[]`, still `help calls=1`, and the `WARNING: … produced no encoder list` line **at most once**. A count of `3` there means `HB_ENCODERS_LOADED` was dropped and emptiness is being used as the "not loaded" sentinel again — the degraded path then costs one `--help` per candidate and repeats the warning for each.
 
 ---
 
@@ -925,9 +1224,14 @@ A working GPU logs the encoder, the driver library and the GPU name. Anything
 else logs an `ERROR:` block naming the exact fix and falls back to software
 encoding — the container keeps converting either way, it just uses the CPU.
 
-The measured details for this build, including the NVENC encoders it contains
-and the hardware evidence behind the "developer-verified" claim, are in
-[`docs/hardware-encoding-nvidia.md`](docs/hardware-encoding-nvidia.md).
+The container never guesses an encoder name: at start-up it asks the bundled
+`HandBrakeCLI` which encoders it can actually use on your GPU and picks from
+that list, so a driver or GPU that cannot do NVENC is detected instead of
+assumed.
+
+The measured details for this build, including the NVENC encoders it offers on
+a working GPU and the hardware evidence behind the "developer-verified" claim,
+are in [`docs/hardware-encoding-nvidia.md`](docs/hardware-encoding-nvidia.md).
 ````
 
 - [ ] **Step 4: Add three entries to section 11**
@@ -945,6 +1249,13 @@ in software until then.
 driver capabilities are too narrow. Set
 `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`; the default of the NVIDIA
 runtime leaves `video` out, and `video` is what injects the encoder library.
+
+**The log says HandBrakeCLI "offers none of" the NVENC encoders.** The GPU and
+the driver library are both there, but HandBrake itself will not use NVENC on
+this machine. HandBrake only lists a hardware encoder it can currently use, so
+the usual cause is an NVIDIA driver older than HandBrake's minimum — update the
+Nvidia-Driver plugin. The log line `Encoders HandBrakeCLI offers here:` shows
+exactly what it did find.
 
 **NVENC is on but the files are still slow.** Check which encoder ran:
 
@@ -1113,6 +1424,29 @@ Expected: `[handbrake-gpu] GPU acceleration: NVIDIA NVENC — NVIDIA GeForce RTX
 
 This step also empirically confirms that `compute,video,utility` is sufficient: if `libnvidia-encode.so.1` is listed here, the `video` capability did its job.
 
+- [ ] **Step 6a: Record the live encoder list — the authoritative one**
+
+This is the measurement Task 2 could not take, and the direct proof that the live probe was the right mechanism. It is the same extraction `hb_load_encoders()` performs:
+
+```bash
+docker exec hb-nvenc-test sh -c \
+  "HandBrakeCLI --help 2>/dev/null | awk '/^[[:space:]]*-e, --encoder[[:space:]]/{f=1;next} f&&/^[[:space:]]*-/{f=0} f' \
+     | sed 's/^[[:space:]]*//;s/[[:space:]]*\$//' | grep -v '^\$'"
+docker exec hb-nvenc-test sh -c \
+  'sed -n "/-e, --encoder/,/^[[:space:]]*-[a-zA-Z-]/p" /usr/local/share/handbrake-cli-help.txt \
+     | tr " ,\t" "\n\n\n" | grep -E "^nvenc" | sort -u; echo "[dump exit $?]"'
+```
+Expected, and this contrast is the whole point of the fix: the **live** list now contains `nvenc_h264` and `nvenc_h265` (and possibly `nvenc_av1`), while the **build-time dump inside the very same container** still contains none of them. Record both outputs — Task 10 pastes them into section 7 as the evidence that a dump-based lookup would have failed on this exact working GPU.
+
+- [ ] **Step 6b: Record the NVENC encoder presets, deferred from Task 2, Step 2**
+
+The encoder now resolves by name, so this command finally works:
+
+```bash
+docker exec hb-nvenc-test HandBrakeCLI --encoder-preset-list nvenc_h264 2>&1
+```
+Expected: the preset names HandBrake accepts for `nvenc_h264`. Record them; Task 10 backfills section 2 of `docs/hardware-encoding-nvidia.md`, and Task 7's README already tells users to run this command themselves.
+
 **If the GPU is not detected here, do not start guessing.** One failed round is the limit: report exactly what the four commands above printed and ask jdp to run `nvidia-smi` plus `docker inspect hb-nvenc-test --format '{{json .HostConfig.Runtime}} {{json .Config.Env}}'` on the box.
 
 - [ ] **Step 7: Start the samplers, then feed the watch folder**
@@ -1244,6 +1578,23 @@ Append to `d:\nextcloud\it\github\handbrake\docs\hardware-encoding-nvidia.md`, r
 <paste the [handbrake-gpu] block from Task 9, Step 6>
 ```
 
+### Why the check is a live probe, measured on this machine
+
+Same container, same binary, same moment — the live encoder list and the
+build-time dump disagree, because `libhb` filters the live list through
+`hb_nvenc_h264_available()` and the dump was written on a builder with no GPU:
+
+```text
+live HandBrakeCLI --help:
+<paste the live encoder list from Task 9, Step 6a>
+
+/usr/local/share/handbrake-cli-help.txt (same container):
+<paste the dump output from Task 9, Step 6a — expected to be empty of nvenc_*>
+```
+
+A dump-based lookup would have reported "no NVENC in this build" on this exact
+working GPU. That is why `handbrake-gpu.sh` asks the running binary.
+
 ### HandBrake used the NVENC encoder
 
 ```text
@@ -1267,7 +1618,14 @@ The NVENC output decodes without errors (`ffmpeg -i … -f null -`) and reports
 `<paste the ffprobe line>`.
 ````
 
-- [ ] **Step 2: Verify**
+- [ ] **Step 2: Backfill sections 1 and 2 with what only the GPU box could measure**
+
+Two placeholders were deliberately left open earlier because a GPU-less machine cannot fill them. Close them now, from the output recorded in Task 9:
+
+- **Section 1** — add the live encoder list from Task 9, Step 6a as the authoritative `nvenc_*` identifier list for this build. The GPU-less measurements stay where they are; they are the evidence for the mechanism, not a substitute for this.
+- **Section 2** — replace the `--encoder-preset` placeholder with the output of Task 9, Step 6b. If Task 2, Step 2 recorded an error instead of preset names, remove that error text now rather than leaving both.
+
+- [ ] **Step 3: Verify**
 
 Run:
 ```bash
@@ -1278,7 +1636,7 @@ grep -nE '192\.168\.|10\.[0-9]+\.[0-9]+\.[0-9]+|GPU-[0-9a-f]{8}' docs/hardware-e
 ```
 Expected: `no placeholders` and `no host data`. The GPU model and driver version are fine to publish; the host address and the GPU UUID are not.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 cd /d/nextcloud/it/github/handbrake
@@ -1497,10 +1855,12 @@ feature set; NVENC changes that description. Update whichever already exists.
 
 Run this before declaring the plan finished.
 
-- [ ] No `TBD`, `TODO`, `similar to Task N`, or "add appropriate error handling" anywhere in this document. Every unknown (encoder ids, encoder-preset names, the `--enable-hw-decoding` spelling, the driver-capability values, the minimum driver version, the hardware presets) has an explicit confirming command in Task 2 or Task 3, and the later steps consume that recorded output.
-- [ ] Names match Plan 1 exactly, re-checked against `docs/superpowers/plans/2026-08-12-handbrake-core-port.md`: `rootfs/usr/local/bin/handbrake-gpu.sh`, `gpu_args_for_vendor()`, `GPU_VENDOR`, `/run/handbrake/gpu-args`, `/run/handbrake/gpu-vendor`, `init-handbrake`, `handbrake-watch.sh`, `HB_GPU_ARGS`, `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS`, `/usr/local/share/handbrake-cli-help.txt`, the `[handbrake-gpu]` log prefix.
+- [ ] No `TBD`, `TODO`, `similar to Task N`, or "add appropriate error handling" anywhere in this document. Every unknown has an explicit confirming command and a named machine to run it on: the `--enable-hw-decoding` spelling, the driver-capability values, the minimum driver version and the hardware presets in Tasks 2 and 3 (GPU-less is fine); the `nvenc_*` identifiers and the `--encoder-preset` names in Task 9, Steps 6a and 6b (real GPU required, because `libhb` will not admit to them anywhere else). Task 10, Step 2 backfills the two placeholders that Task 2 deliberately leaves open.
+- [ ] **The encoder lookup is a live probe, not a build-time dump lookup**, and every place that describes it agrees: the Architecture paragraph, the Global Constraints, "Why the encoder check asks the live binary", Task 2 Step 1, Task 3's section 6, the script's header comment, `hb_load_encoders`/`hb_has_encoder`/`hb_pick_encoder`, the `nvidia)` branch, Task 6, Task 9 Step 6a and this handoff. The name `hb_help_lists_encoder` appears nowhere in the script in Task 4; it survives only as a historical reference in this checklist and in the Plan 3 handoff, where naming it is the point.
+- [ ] **`hb_help_lists_nvdec()` still reads `HB_CLI_HELP`, and that is deliberate, not an oversight.** The `--enable-hw-decoding` help text is a static literal guarded by a compile-time `#if`; only the encoder list is hardware-filtered. The exception is documented in the function's own comment, in Task 2 Step 3 and in the research section.
+- [ ] Names match Plan 1 exactly, re-checked against `docs/superpowers/plans/2026-08-12-handbrake-core-port.md`: `rootfs/usr/local/bin/handbrake-gpu.sh`, `gpu_args_for_vendor()`, `GPU_VENDOR`, `/run/handbrake/gpu-args`, `/run/handbrake/gpu-vendor`, `init-handbrake`, `handbrake-watch.sh`, `HB_GPU_ARGS`, `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS`, `/usr/local/share/handbrake-cli-help.txt` (now referenced only by `hb_help_lists_nvdec`), the `[handbrake-gpu]` log prefix. The live-probe helper names are Plan 3's, on purpose: `hb_load_encoders`, `hb_has_encoder`, `hb_pick_encoder`.
 - [ ] Exactly four files are touched: `rootfs/usr/local/bin/handbrake-gpu.sh`, `README.md`, `docs/hardware-encoding-nvidia.md`, `.github/release-notes/v1.1.0.md`. No Dockerfile change (none is needed — the NVIDIA runtime injects the libraries), no s6 service change, no workflow change.
-- [ ] The fail-loud requirement is covered three ways: a distinct error block per failure cause in the script (Task 4), a scripted assertion of the exact text (Task 5, Step 3), and a full-container assertion that conversions keep working (Task 5, Steps 4 and 5).
+- [ ] The fail-loud requirement is covered three ways: a distinct error block per failure cause in the script (Task 4), a scripted assertion of the exact text (Task 5, Step 3), and a full-container assertion that conversions keep working (Task 5, Steps 4 and 5). All three failure causes are exercised on a GPU-less machine — no device (Task 5, Step 3), no library (Task 6, Step 3) and no NVENC encoder offered (Task 6, Step 4) — and each produces its own block naming its own fix.
 - [ ] The real-hardware verification is concrete: exact `docker run` with `--runtime=nvidia`, the GPU UUID from `nvidia-smi -L`, `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`, a generated 180 s 1080p clip, three fixed pass criteria (HandBrake's own log, `nvidia-smi` encoder activity, a timed software negative control under the same CPU limit), a decode check on the output, and a cleanup step. Test containers carry `--cpus`/`--memory`.
 - [ ] The Unraid template is handled as a handoff to `junkerderprovinz/unraid-apps` (Task 11 writes the exact XML, Task 13 applies it there); this plan never edits the feed repo, and Plan 1 created no local template stub to extend.
 - [ ] Versioning follows Plan 1: `v1.0.0` was the first release, this is the minor bump `v1.1.0`, notes at `.github/release-notes/v1.1.0.md`, no version heading in the body, tagging gated on explicit approval.
@@ -1512,8 +1872,10 @@ Run this before declaring the plan finished.
 ## Handoff: what Plan 3 (Intel QSV / AMD VCN) inherits
 
 - The same single seam: add a branch to `gpu_args_for_vendor()` in `rootfs/usr/local/bin/handbrake-gpu.sh`. Do not add a second script and do not touch `handbrake-watch.sh`.
-- Reusable helpers this plan added to that file: `log()`, `hb_help_lists_encoder <id>` (section-scoped, layout-tolerant lookup in `/usr/local/share/handbrake-cli-help.txt`), `nvidia_lib_path <soname>` (rename or generalise for `/dev/dri` and the VAAPI libraries rather than duplicating the loop), and the three-question probe order that produces one error block per cause.
-- The house pattern this plan establishes for a GPU branch, which Plan 3 should mirror: probe the device → probe the runtime library → probe the encoder in the build → emit `--encoder <id>` → log what is in effect. Every failure returns 0, emits no arguments and prints an `ERROR:` block naming the exact fix.
+- Reusable helpers this plan added to that file: `log()`, the live-probe trio `hb_load_encoders` / `hb_has_encoder <id>` / `hb_pick_encoder <id>…` (one `HandBrakeCLI --help` call per container start, cached in `HB_ENCODERS`), `hb_help_lists_nvdec()` (the one legitimate reader of the build-time dump), and `nvidia_lib_path <soname>` (rename or generalise for `/dev/dri` and the VAAPI libraries rather than duplicating the loop), plus the three-question probe order that produces one error block per cause.
+- **The helper names are already Plan 3's**, so the two plans converge on one probe instead of two. When Plan 3's Task 6 rewrites this file, its own `hb_load_encoders` / `hb_has_encoder` / `hb_pick_encoder` supersede these — do not paste a second copy, and expect its `sed s/hb_help_lists_encoder/hb_has_encoder/` to find nothing, because there is nothing left to fix. Plan 3's version additionally runs the probe as `abc` via `s6-setuidgid` and pairs that with an `init-video` ordering edge; take that version wholesale.
+- The house pattern this plan establishes for a GPU branch, which Plan 3 should mirror: probe the device → probe the runtime library → **ask the running `HandBrakeCLI` which encoders it offers here** → emit `--encoder <id>` → log what is in effect. Every failure returns 0, emits no arguments and prints an `ERROR:` block naming the exact fix.
+- **Never resolve a hardware encoder id from `/usr/local/share/handbrake-cli-help.txt`.** `libhb` gates the encoder list on a live availability probe (`hb_video_encoder_is_enabled()` → `hb_nvenc_h264_available()` / `hb_qsv_video_encoder_is_available()` / `hb_vce_h264_available()`), and that dump is recorded during `docker build` on a GPU-less machine, so it never contains one. The dump remains correct for statically printed help text only. Plan 3 records the same finding as finding 1 of its research section; the two plans agree, and neither should be "simplified" back onto the dump.
 - The `*nvenc*` guard on `AUTOMATED_CONVERSION_PRESET` has QSV and VCN equivalents (HandBrake ships `QSV` presets); reuse the same `case` shape with the right substring.
 - Intel and AMD have no local hardware to verify against. Plan 3 cannot copy Task 9; it must ship those vendors as "implemented per HandBrake's documentation, not hardware-verified by us" in the README, exactly as the design spec requires, and keep the developer-verified claim reserved for NVENC.
-- Per Plan 1's research, Ubuntu builds `handbrake-cli` with `--enable-qsv` on amd64 but does not pass `--enable-vce`. Confirm both against `docs/handbrake-capabilities.md` and the `hb_help_lists_encoder` probe before designing the AMD half — a vendor whose encoders are not in the build can only ever hit the third error block.
+- Per Plan 1's research, Ubuntu builds `handbrake-cli` with `--enable-qsv` on amd64 but does not pass `--enable-vce`. Confirm both against `docs/handbrake-capabilities.md` and by grepping the binary for the id strings (the technique in Task 2, Step 1c) before designing the AMD half. Note that `hb_has_encoder` **cannot** answer this question on a GPU-less machine: a missing id there means "not compiled in **or** no usable hardware", and the two are indistinguishable without the hardware. A vendor whose encoders are genuinely not in the build can only ever hit the third error block.
