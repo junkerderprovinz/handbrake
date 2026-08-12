@@ -43,10 +43,10 @@ project — not a git remote.
    against the HandBrakeCLI version actually bundled — see Task-level verification in
    the implementation plan). This is the concrete gap jlesage's image has left open for
    7 years.
-3. House-standard Carbon `#161616` monochrome dark theme, Selkies WebUI, CI boot-smoke
-   gate, multi-arch GHCR + Docker Hub publish, Unraid CA template — matching
-   `jdownloader`/`krusader`/`matrix` conventions exactly (see `Docker Container` and
-   `GitHub` house style guides).
+3. Selkies WebUI, dark-by-default via HandBrake's own native GTK dark theme (not a
+   Carbon rebuild, see Branding / Theming), CI boot-smoke gate, multi-arch GHCR +
+   Docker Hub publish, Unraid CA template — matching `jdownloader`/`krusader`/`matrix`
+   conventions exactly (see `Docker Container` and `GitHub` house style guides).
 
 ## Non-Goals (v1)
 
@@ -79,8 +79,9 @@ project — not a git remote.
   no-op, confirm during implementation).
 - **No Java agent needed** — HandBrake's GTK GUI does not use FlatLaf/Swing, so the
   `jdownloader`-style dialog-confirm/theme-defaults-source agent pattern does not
-  apply here. Theming goes through GTK's own theme mechanism (a dark GTK theme
-  package, e.g. Adwaita-dark or a Carbon-matched custom GTK CSS theme) instead.
+  apply here. Theming goes through GTK's own theme mechanism instead (see Branding /
+  Theming below — resolved in favour of HandBrake's own native dark mode, not a
+  Carbon rebuild).
 
 ## GPU Encoding Support
 
@@ -154,11 +155,21 @@ anyone moving from `jlesage/handbrake`):
 - Keep HandBrake's real name, real logo (GPL, no licensing concern — verify HandBrake's
   actual trademark/logo usage policy before embedding the logo asset, same diligence
   applied to every repo's assets).
-- Carbon `#161616` monochrome dark GTK theme, consistent with the rest of the fleet's
-  visual language — this is a GTK theme/CSS exercise, not a FlatLaf one (see
-  Architecture). **Dark is the default theme** (matching `jdownloader`'s
-  `JD_THEME=Dark` default); Light is available as an explicit override, not the other
-  way around.
+- **Use HandBrake's own native dark mode, not a Carbon rebuild** (jdp, 2026-08-12: "es
+  muss nicht unbedingt unser farbschema im dark mode sein falls handbrake schon einen
+  nativen dark mode hat"). Investigated how jlesage's `DARK_MODE=1` actually works: it
+  is not HandBrake-specific code, it simply switches the container's system GTK theme
+  (`GTK_THEME`/`GTK2_RC_FILES`, implemented in jlesage's shared
+  `docker-baseimage-gui`) to a stock dark GTK theme — `ghb`, being a well-behaved GTK
+  app, picks that up automatically like any GTK application does. So a genuine,
+  already-working dark mode exists with zero HandBrake-specific styling work: ship a
+  stock dark GTK theme (e.g. Adwaita-dark, confirm the best available option at
+  implementation time) as the default, rather than building a custom Carbon-matched
+  GTK theme/CSS. **Dark is still the default** (matching `jdownloader`'s
+  `JD_THEME=Dark` default), Light available as an explicit override — only the
+  *mechanism* changed (native stock theme instead of a custom Carbon rebuild), not the
+  default-dark decision itself. A Carbon-matched GTK theme remains a possible future
+  visual-consistency polish, explicitly NOT a v1 requirement.
 - README banner follows the established `<picture>` dark/light pair convention.
 
 ## CA / Template
@@ -186,9 +197,11 @@ convention exactly (see `release-repo` skill).
    the "always pull fresh at build time" pattern `jdownloader` uses rather than
    vendoring a pinned old version, unless HandBrake's own release cadence makes that
    impractical.
-3. GTK dark theme mechanism for Carbon-matching (custom GTK CSS vs. an existing dark
-   GTK theme package) — needs a short spike during implementation, no FlatLaf
-   precedent to reuse here since this is a different GUI toolkit entirely.
+3. ~~GTK dark theme mechanism~~ — **resolved**: ship a stock dark GTK theme (native
+   mechanism, same one jlesage's base image already uses), not a Carbon rebuild. Only
+   remaining implementation detail is which specific stock dark GTK theme package
+   looks best (e.g. confirm Adwaita-dark vs. an alternative) — a quick visual check,
+   not an open design question anymore.
 4. Whether HandBrake's GTK GUI has any first-run dialogs analogous to JDownloader's
    forced installer dialogs (needing a dialog-confirm mechanism) — unknown until a
    fresh install is actually run and observed.
