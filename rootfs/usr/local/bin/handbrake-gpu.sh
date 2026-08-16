@@ -275,6 +275,14 @@ gpu_args_for_vendor() {
             ;;
 
         nvidia)
+            # hb_load_encoders + hb_write_diag come first, matching the intel/amd
+            # branches below: a hardware report needs GPU_LOG regardless of which
+            # step fails, not only the "no NVENC encoder" case. hb_load_encoders
+            # itself needs no GPU (it just parses `HandBrakeCLI --help`), so it is
+            # always safe to run before the device/library checks.
+            hb_load_encoders
+            hb_write_diag "${vendor}"
+
             # -- 1) Is an NVIDIA GPU passed into this container at all? --------
             if ! nvidia_device_present; then
                 printf ''
@@ -304,9 +312,7 @@ gpu_args_for_vendor() {
             # -- 3) Does the RUNNING HandBrakeCLI offer an NVENC encoder here? -
             # Asking the live binary is both the identifier lookup and the final
             # hardware check: libhb hides nvenc_* until its own availability
-            # probe passes. hb_load_encoders runs in THIS shell (not inside the
-            # command substitution below) so the --help call happens once.
-            hb_load_encoders
+            # probe passes. hb_load_encoders already ran above.
             enc="$(hb_pick_encoder "${NVENC_CANDIDATES[@]}" || true)"
             if [ -z "${enc}" ]; then
                 printf ''
@@ -358,6 +364,7 @@ gpu_args_for_vendor() {
                 log "      as soon as any filter runs, which every stock preset does. Add"
                 log "      '--enable-hw-decoding nvdec' to AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS to force it."
             fi
+            log "diagnostics: ${GPU_LOG}"
             ;;
 
         intel)
