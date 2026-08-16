@@ -627,6 +627,12 @@ so exactly one container converts it. Some ground rules:
   locking is off, the log says so, and you must not point a second instance at it.
 - Give each container its own `/config`. The conversion bookkeeping is per
   container; the lock is what keeps them from colliding.
+- Give each container a distinct `--hostname`. A container only ever clears
+  locks tagged with its own hostname on startup, so two containers sharing one
+  hostname (e.g. copy-pasted into a second `docker-compose` service without
+  changing it) could clear each other's in-progress lock. Docker's own default
+  hostname (the container ID) is already unique; this only matters if you set
+  `hostname:`/`--hostname` explicitly.
 - If both containers share one output folder, leave
   `AUTOMATED_CONVERSION_OVERWRITE_OUTPUT=0` (the default). A file the other
   container already converted is then simply skipped.
