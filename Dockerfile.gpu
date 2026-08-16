@@ -106,11 +106,24 @@ RUN set -eux; \
 # to check_component_available() is a wide-char literal that only lands in the
 # binary when HB_PROJECT_FEATURE_VCE was on (libhb/vce_common.c); wchar_t is
 # 4 bytes on Linux, hence `strings -e L`.
+#
+# Both checks write `strings` output to a file before grepping it, ON PURPOSE:
+# `strings ... | grep -qx ...` under `set -o pipefail` (above) is a real trap —
+# grep -q exits the instant it finds a match, strings gets SIGPIPE (exit 141),
+# and pipefail then reports the PIPELINE as failed (141) even though grep truly
+# found the string, because pipefail picks the rightmost NONZERO exit code, not
+# grep's own. Measured here: this exact `|| { ...; exit 1; }` fired with
+# "no qsv_h264 identifier" while a plain `strings | grep -i qsv` on the same
+# binary clearly showed `qsv_h264` present. Writing to a file removes the pipe
+# entirely, so there is nothing for SIGPIPE to interrupt.
 RUN set -eux; \
-    strings -a /src/build/HandBrakeCLI | grep -qx 'qsv_h264' \
+    strings -a /src/build/HandBrakeCLI > /tmp/hb-strings.txt; \
+    grep -qx 'qsv_h264' /tmp/hb-strings.txt \
         || { echo "ERROR: the built HandBrakeCLI contains no qsv_h264 identifier"; exit 1; }; \
-    strings -e L /src/build/HandBrakeCLI | grep -qx 'AMFVideoEncoderVCE_AVC' \
+    strings -e L /src/build/HandBrakeCLI > /tmp/hb-strings-wide.txt; \
+    grep -qx 'AMFVideoEncoderVCE_AVC' /tmp/hb-strings-wide.txt \
         || { echo "ERROR: the built HandBrakeCLI contains no AMF/VCE code path"; exit 1; }; \
+    rm -f /tmp/hb-strings.txt /tmp/hb-strings-wide.txt; \
     echo "handbrake-gpu-full: qsv_h264 and AMF/VCE code paths confirmed in the binary"
 
 # Work out exactly which runtime packages the new binary needs, instead of
