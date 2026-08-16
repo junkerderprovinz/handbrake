@@ -30,6 +30,26 @@ convert-test:
     docker exec hb-smoke chown abc:abc /watch/hb-smoke.mkv
     @echo "dropped /watch/hb-smoke.mkv — watch: docker logs -f hb-smoke"
 
+# Boot a throwaway container with every parity feature on (WebUI on 3101/HTTPS,
+# user parity / parity-secret). Mirrors the CI feature-parity gate.
+parity: build
+    -docker rm -f hb-parity
+    docker run -d --name hb-parity -p 3100:3000 -p 3101:3001 \
+      -e CUSTOM_USER=parity -e PASSWORD=parity-secret \
+      -e WEB_TERMINAL=1 -e WEB_NOTIFICATION=1 \
+      -e WEB_FILE_MANAGER_DENIED_PATHS=/output/private \
+      -e AUTOMATED_CONVERSION_STAGING_DIR=/staging \
+      handbrake:smoke-amd64
+    @echo "https://localhost:3101/  (parity / parity-secret) — stop with: docker rm -f hb-parity"
+
+# Assert the parity surface of a running `just parity` container
+parity-check:
+    curl -k -s -o /dev/null -w 'anonymous      -> %{http_code}\n' https://localhost:3101/
+    curl -k -s -u parity:parity-secret -o /dev/null -w 'authenticated  -> %{http_code}\n' https://localhost:3101/
+    curl -k -s -u parity:parity-secret -o /dev/null -w 'file manager   -> %{http_code}\n' https://localhost:3101/files/
+    docker exec hb-parity sh -c 'stat -c "xterm %A" /usr/bin/xterm; pgrep -x dunst >/dev/null && echo "dunst running"; grep -c handbrake-terminal /config/.config/openbox/rc.xml | sed "s/^/keybinds /"'
+    @echo "expected: 401, 200, 200, xterm -rwxr-xr-x, dunst running, keybinds 1"
+
 # Lint the Dockerfile (same ignores as CI)
 hadolint:
     hadolint Dockerfile --ignore DL3008 --ignore DL3009
