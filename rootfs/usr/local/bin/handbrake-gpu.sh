@@ -4,47 +4,64 @@
 # ---------------------------------------------------------------------------
 # Resolves GPU_VENDOR into the extra HandBrakeCLI arguments used for hardware
 # encoding. Prints the argument string on STDOUT (empty = software encoding) and
-# a human-readable decision block on STDERR.
+# human-readable decision lines on STDERR.
 #
-# Implemented vendors:
-#   none    software encoding (x264/x265) — the default
-#   nvidia  NVENC hardware encoding, when the container really has a usable
-#           NVIDIA GPU. When it does not, this script says so loudly, names the
-#           exact fix and falls back to software encoding — it never emits
-#           arguments that would make every single job fail.
+# STDOUT IS A COMMAND LINE, NOT A LOG.
+#   init-handbrake redirects this script's stdout into /run/handbrake/gpu-args,
+#   and handbrake-watch.sh splices that file into every HandBrakeCLI invocation.
+#   A single stray echo on stdout becomes a bogus HandBrakeCLI argument and
+#   breaks every conversion. Everything human-readable goes through log()/warn(),
+#   which write to stderr.
 #
-# The arguments only affect the AUTOMATED WATCH-FOLDER daemon, which is the only
-# reader of /run/handbrake/gpu-args. In the GUI the user picks the encoder
-# themselves; NVENC shows up in HandBrake's own encoder list as soon as the
-# driver libraries are present.
-#
-# HOW AN ENCODER IS FOUND: BY ASKING THE RUNNING HANDBRAKE
+# HOW A VENDOR IS DETECTED: BY ASKING HANDBRAKE
 #   libhb lists a hardware encoder in --help only when it is BOTH compiled in
-#   AND usable on the hardware present right now (libhb/common.c:
-#   hb_video_encoder_is_enabled() -> hb_nvenc_h264_available()). One --help call
-#   is therefore the identifier lookup and the hardware probe at the same time,
-#   and no encoder id is ever hardcoded into an argument.
+#   AND usable on the hardware present right now (libhb/common.c,
+#   hb_video_encoder_is_enabled() -> hb_qsv_video_encoder_is_available() /
+#   hb_vce_h264_available() / hb_nvenc_h264_available()). One --help call is
+#   therefore the identifier lookup and the hardware probe at the same time, and
+#   no encoder id is ever hardcoded into an argument.
 #
 #   Do NOT use the build-time dump /usr/local/share/handbrake-cli-help.txt for
 #   this, or for any other hardware-capability question. It is recorded during
 #   `docker build` on a machine with no GPU, so it never contains a single
-#   hardware encoder and the lookup would fail even on a working GPU. Its
-#   static option-syntax text (e.g. "--enable-hw-decoding") also cannot be
-#   trusted for whether a feature was actually compiled in: measured on real
-#   NVENC hardware, the dump still names 'nvdec' as a valid
-#   --enable-hw-decoding value while HandBrakeCLI's own runtime diagnostic
-#   says nvdec is not compiled into this build at all. See
-#   docs/hardware-encoding-nvidia.md sections 1 and 3.
+#   hardware encoder. Its static option-syntax text (e.g. "--enable-hw-decoding")
+#   also cannot be trusted for whether a feature was actually compiled in:
+#   measured on real NVENC hardware, the dump still names 'nvdec' as a valid
+#   --enable-hw-decoding value while HandBrakeCLI's own runtime diagnostic says
+#   nvdec is not compiled into this build at all. See
+#   docs/handbrake-capabilities.md and docs/hardware-encoding-nvidia.md
+#   sections 1 and 3.
 #
-# EXTENSION POINT — this is the ONLY place a GPU plan needs to touch:
-#   * add the vendor's branch to gpu_args_for_vendor()
-#   * give it a candidate list and resolve it with hb_pick_encoder (never a
-#     guessed name, never the build-time dump)
-# The watch daemon and the init oneshot need no changes at all.
+#   The probe runs as abc, the user that later runs the conversions, so a
+#   missing /dev/dri group problem is caught here instead of failing every job
+#   later. init-handbrake depends on the base image's init-video oneshot, which
+#   is what puts abc into the render node's group.
+#
+# EXTENSION POINT: add a branch to gpu_args_for_vendor() and give it a candidate
+# list for hb_pick_encoder. Nothing else in the container needs to change.
 # ---------------------------------------------------------------------------
 set -eu
 
-log() { echo "[handbrake-gpu] $*" >&2; }
+GPU_LOG="/config/handbrake-gpu.log"
+
+log()  { echo "[handbrake-gpu] $*" >&2; }
+warn() { echo "[handbrake-gpu] WARNING: $*" >&2; }
+
+VENDOR_RAW="${1:-none}"
+VENDOR="$(printf '%s' "${VENDOR_RAW}" | tr '[:upper:]' '[:lower:]')"
+
+case "${VENDOR}" in
+    ""|none|off|disabled) VENDOR="none" ;;
+    nvidia|nvenc)         VENDOR="nvidia" ;;
+    intel|qsv)            VENDOR="intel" ;;
+    amd|vce|vcn)          VENDOR="amd" ;;
+    *)
+        warn "unrecognised GPU_VENDOR='${VENDOR_RAW}' — use none, nvidia, intel or amd"
+        VENDOR="none"
+        ;;
+esac
+
+# --- probes -----------------------------------------------------------------
 
 # NVENC encoder preference order. H.264 comes FIRST on purpose: the default
 # preset (General/Very Fast 1080p30) is an x264 preset, so nvenc_h264 keeps the
@@ -55,34 +72,27 @@ log() { echo "[handbrake-gpu] $*" >&2; }
 # the watch daemon splices in AFTER these arguments, so the later value wins.
 NVENC_CANDIDATES=(nvenc_h264 nvenc_h265)
 
-# --- capability probes ------------------------------------------------------
-
-# Cache of the encoder ids the running HandBrakeCLI offers on THIS machine.
-# HB_ENCODERS_LOADED is a separate flag on purpose: "the list is empty" is a
-# legitimate answer (a build with no hardware encoders), so emptiness must not
-# be used as "not loaded yet". Overloading it would re-run HandBrakeCLI --help
-# once per candidate and print the warning below once per candidate too.
 HB_ENCODERS=""
-HB_ENCODERS_LOADED=0
 
-# hb_load_encoders — ask the real binary, once, what it can encode here.
+# hb_load_encoders — ask the real binary once, as the runtime user, and cache
+# the newline-separated encoder ids in HB_ENCODERS.
 #
-# This is the live hardware probe, not a lookup in a recorded file: libhb only
-# lists nvenc_* after hb_nvenc_h264_available() has said yes, so an id appearing
-# here is proof that HandBrake can use it right now. The build-time dump is
-# recorded without a GPU and would always answer "no".
-#
-# Call this from the PARENT shell before using hb_pick_encoder. hb_pick_encoder
-# is used inside a command substitution, which runs in a subshell, so a cache
-# filled there would be thrown away and every candidate would cost another
-# HandBrakeCLI --help call. Filling it here means exactly one call per start.
+# Each vendor branch calls this DIRECTLY before anything else. That is not
+# redundant: hb_pick_encoder is used inside a command substitution, which runs
+# in a subshell, so a cache filled in there would be thrown away and every
+# candidate would re-run HandBrakeCLI --help. Filling it in the parent first
+# means exactly one --help call per container start.
 hb_load_encoders() {
-    if [ "${HB_ENCODERS_LOADED}" = "1" ]; then
+    if [ -n "${HB_ENCODERS}" ]; then
         return 0
     fi
-    HB_ENCODERS_LOADED=1
     local raw=""
-    raw="$(HandBrakeCLI --help 2>/dev/null || true)"
+    if command -v s6-setuidgid >/dev/null 2>&1 && id abc >/dev/null 2>&1; then
+        raw="$(s6-setuidgid abc env HOME=/config XDG_CONFIG_HOME=/config/.config \
+                 HandBrakeCLI --help 2>/dev/null || true)"
+    else
+        raw="$(HandBrakeCLI --help 2>/dev/null || true)"
+    fi
     HB_ENCODERS="$(printf '%s\n' "${raw}" | awk '
         /^[[:space:]]*-e, --encoder[[:space:]]/ { inlist = 1; next }
         inlist && /^[[:space:]]*-/              { inlist = 0 }
@@ -92,20 +102,17 @@ hb_load_encoders() {
         }
     ')"
     if [ -z "${HB_ENCODERS}" ]; then
-        log "WARNING: 'HandBrakeCLI --help' produced no encoder list — hardware detection cannot run."
+        warn "HandBrakeCLI --help produced no encoder list — hardware detection cannot run."
     fi
 }
 
 hb_has_encoder() {
-    # True when the running HandBrakeCLI offers encoder id $1 on this machine.
     hb_load_encoders
     printf '%s\n' "${HB_ENCODERS}" | grep -qxF -- "$1"
 }
 
-# hb_pick_encoder <id> [id...] — print the first id the binary offers here and
-# return 0; return 1 when it offers none of them.
-# Callers MUST append '|| true': under 'set -e' a command substitution that
-# returns non-zero would otherwise kill the script before the error block runs.
+# hb_pick_encoder <id> [id...] — echo the first id this build offers on this
+# machine; return 1 when it offers none of them.
 hb_pick_encoder() {
     local id
     for id in "$@"; do
@@ -117,23 +124,26 @@ hb_pick_encoder() {
     return 1
 }
 
+hb_render_nodes() { ls -1 /dev/dri/renderD* 2>/dev/null || true; }
+
+# hb_nvdec_compiled_in — True when THIS build's libhb actually has NVDEC
+# compiled in.
+#
+# NOT a build-time-dump check, despite the --enable-hw-decoding help entry
+# being a static string that always names 'nvdec' as a valid value: that text
+# describes the OPTION's syntax, not whether the feature was compiled in, and
+# measuring it on real hardware proved it wrong — HandBrakeCLI printed
+# "nvdec: is not compiled into this build" on its own diagnostic line while
+# --help still listed nvdec as an --enable-hw-decoding value. See
+# docs/hardware-encoding-nvidia.md section 3 for the measured proof.
+#
+# HandBrakeCLI prints this diagnostic to stderr on every invocation once an
+# NVIDIA device is present (the nvidia branch only calls this after its own
+# device/library probes already passed), so a cheap --version call is a real,
+# live probe: "nvdec: version N is available" vs "nvdec: is not compiled into
+# this build". Same "ask the running binary" philosophy as the encoder check,
+# applied to decode instead of encode.
 hb_nvdec_compiled_in() {
-    # True when THIS build's libhb actually has NVDEC compiled in.
-    #
-    # NOT a build-time-dump check, despite the --enable-hw-decoding help entry
-    # being a static string that always names 'nvdec' as a valid value: that
-    # text describes the OPTION's syntax, not whether the feature was compiled
-    # in, and measuring it on real hardware proved it wrong — HandBrakeCLI
-    # printed "nvdec: is not compiled into this build" on its own diagnostic
-    # line while --help still listed nvdec as an --enable-hw-decoding value.
-    # See docs/hardware-encoding-nvidia.md section 3 for the measured proof.
-    #
-    # HandBrakeCLI prints this diagnostic to stderr on every invocation once an
-    # NVIDIA device is present (before this function ever runs, probes 1 and 2
-    # already confirmed that), so a cheap --version call is a real, live probe:
-    # "nvdec: version N is available" vs "nvdec: is not compiled into this
-    # build". This is the same "ask the running binary" philosophy as the
-    # encoder check, applied to decode instead of encode.
     HandBrakeCLI --version 2>&1 | grep -q 'nvdec: version'
 }
 
@@ -175,29 +185,95 @@ nvidia_smi_summary() {
     nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -n 1
 }
 
-# --- vendor normalisation ---------------------------------------------------
+# hb_have_amf_runtime — used only to explain WHY an AMD encoder is missing.
+# AMD's AMF runtime is proprietary, is not in Ubuntu, and cannot ship in this
+# image; a user has to bind-mount it in, which happens after the image was
+# built, so the loader cache is refreshed before it is consulted.
+hb_have_amf_runtime() {
+    ldconfig >/dev/null 2>&1 || true
+    if ldconfig -p 2>/dev/null | grep -q 'libamfrt64\.so'; then
+        return 0
+    fi
+    local cand
+    for cand in /usr/lib/x86_64-linux-gnu/libamfrt64.so* \
+                /usr/lib/libamfrt64.so* \
+                /opt/amdgpu-pro/lib/x86_64-linux-gnu/libamfrt64.so*; do
+        if [ -e "${cand}" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
-VENDOR_RAW="${1:-none}"
-VENDOR="$(printf '%s' "${VENDOR_RAW}" | tr '[:upper:]' '[:lower:]')"
+# hb_write_diag <vendor> — everything a hardware report needs, in one file.
+# Writes to ${GPU_LOG} ONLY. Never to stdout.
+hb_write_diag() {
+    local vendor="$1" node
+    node="$(hb_render_nodes | head -n 1)"
+    {
+        echo "=== handbrake-gpu diagnostics ==="
+        echo "date             : $(date -Is)"
+        echo "GPU_VENDOR (raw) : ${VENDOR_RAW}"
+        echo "vendor (parsed)  : ${vendor}"
+        echo "architecture     : $(uname -m)"
+        echo
+        echo "--- image build ---"
+        if [ -f /etc/handbrake-build ]; then
+            cat /etc/handbrake-build
+        else
+            echo "no /etc/handbrake-build"
+        fi
+        head -n 1 /usr/local/share/handbrake-version.txt 2>/dev/null || echo "no version dump"
+        echo
+        echo "--- /dev/dri ---"
+        ls -l /dev/dri 2>&1 || true
+        echo
+        echo "--- runtime user (must be in the render node's group) ---"
+        id abc 2>&1 || true
+        echo
+        echo "--- DRM kernel drivers ---"
+        for drv in /sys/class/drm/renderD*/device/driver; do
+            if [ -e "${drv}" ]; then
+                echo "${drv} -> $(basename "$(readlink -f "${drv}")")"
+            fi
+        done
+        echo
+        echo "--- encoders HandBrakeCLI offers HERE (compiled in AND hardware usable) ---"
+        printf '%s\n' "${HB_ENCODERS}"
+        echo
+        echo "--- vainfo ---"
+        if command -v vainfo >/dev/null 2>&1 && [ -n "${node}" ]; then
+            vainfo --display drm --device "${node}" 2>&1 || true
+        else
+            echo "vainfo not installed, or no render node to query"
+        fi
+        echo
+        echo "--- vpl-inspect (Intel oneVPL) ---"
+        if command -v vpl-inspect >/dev/null 2>&1; then
+            vpl-inspect 2>&1 || true
+        else
+            echo "vpl-inspect not installed"
+        fi
+        echo
+        echo "--- AMF runtime (AMD VCE) ---"
+        ldconfig -p 2>/dev/null | grep -i 'libamfrt64' || echo "libamfrt64.so* is not in the loader cache"
+    } > "${GPU_LOG}" 2>&1 || true
+    chown "${PUID:-911}:${PGID:-911}" "${GPU_LOG}" 2>/dev/null || true
+    chmod 0644 "${GPU_LOG}" 2>/dev/null || true
+}
 
-case "${VENDOR}" in
-    ""|none|off|disabled) VENDOR="none" ;;
-    nvidia|nvenc)         VENDOR="nvidia" ;;
-    intel|qsv)            VENDOR="intel" ;;
-    amd|vce|vcn)          VENDOR="amd" ;;
-    *)
-        log "unrecognised GPU_VENDOR='${VENDOR_RAW}' — use none, nvidia, intel or amd"
-        VENDOR="none"
-        ;;
-esac
+# --- vendor selection -------------------------------------------------------
 
 gpu_args_for_vendor() {
-    local encoder="" lib_encode="" lib_decode="" detail="" args=""
-    case "$1" in
+    local vendor="$1" enc="" node="" lib_encode="" lib_decode="" detail="" args=""
+
+    case "${vendor}" in
         none)
             printf ''
             log "GPU acceleration: none — software encoding (x264/x265)"
+            return 0
             ;;
+
         nvidia)
             # -- 1) Is an NVIDIA GPU passed into this container at all? --------
             if ! nvidia_device_present; then
@@ -231,8 +307,8 @@ gpu_args_for_vendor() {
             # probe passes. hb_load_encoders runs in THIS shell (not inside the
             # command substitution below) so the --help call happens once.
             hb_load_encoders
-            encoder="$(hb_pick_encoder "${NVENC_CANDIDATES[@]}" || true)"
-            if [ -z "${encoder}" ]; then
+            enc="$(hb_pick_encoder "${NVENC_CANDIDATES[@]}" || true)"
+            if [ -z "${enc}" ]; then
                 printf ''
                 log "ERROR: GPU_VENDOR=nvidia, the NVIDIA device node and libnvidia-encode.so.1 are both"
                 log "       present, but HandBrakeCLI offers none of '${NVENC_CANDIDATES[*]}' on this machine."
@@ -255,7 +331,7 @@ gpu_args_for_vendor() {
                     args=""
                     ;;
                 *)
-                    args="--encoder ${encoder}"
+                    args="--encoder ${enc}"
                     ;;
             esac
 
@@ -273,7 +349,7 @@ gpu_args_for_vendor() {
                 log "preset '${AUTOMATED_CONVERSION_PRESET:-}' already selects an NVENC encoder — not overriding it"
             else
                 log "HandBrakeCLI arguments: ${args}"
-                log "NOTE: every watch-folder job now encodes with '${encoder}' and overrides the video"
+                log "NOTE: every watch-folder job now encodes with '${enc}' and overrides the video"
                 log "      encoder of AUTOMATED_CONVERSION_PRESET. Put '--encoder <id>' into"
                 log "      AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS to pick a different one."
             fi
@@ -283,10 +359,83 @@ gpu_args_for_vendor() {
                 log "      '--enable-hw-decoding nvdec' to AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS to force it."
             fi
             ;;
+
+        intel)
+            hb_load_encoders
+            hb_write_diag "${vendor}"
+            node="$(hb_render_nodes | head -n 1)"
+
+            if [ -z "${node}" ]; then
+                printf ''
+                warn "GPU_VENDOR=intel, but no DRM render node (/dev/dri/renderD*) is visible in this container."
+                warn "Pass the iGPU through: Unraid adds '--device=/dev/dri' under Extra Parameters, plain docker run takes '--device /dev/dri'."
+                warn "The host also needs the i915 (or xe) kernel driver loaded."
+                warn "Falling back to software encoding."
+                return 0
+            fi
+
+            enc="$(hb_pick_encoder qsv_h264 || true)"
+            if [ -z "${enc}" ]; then
+                printf ''
+                warn "GPU_VENDOR=intel and ${node} exists, but HandBrakeCLI does not offer qsv_h264 on this machine."
+                warn "HandBrake lists a hardware encoder only when it is compiled in AND usable, so one of these holds:"
+                warn "  * the GPU is not an Intel one, or is older than the oneVPL GPU runtime supports"
+                warn "  * the container user cannot use ${node} (check 'runtime user' in ${GPU_LOG})"
+                warn "  * this is arm64 — Intel Quick Sync is x86-64 only"
+                warn "Full details in ${GPU_LOG}. Falling back to software encoding."
+                return 0
+            fi
+
+            printf -- '--encoder %s' "${enc}"
+            log "Intel QSV enabled: --encoder ${enc} (render node ${node})"
+            log "diagnostics: ${GPU_LOG}"
+            ;;
+
+        amd)
+            hb_load_encoders
+            hb_write_diag "${vendor}"
+            node="$(hb_render_nodes | head -n 1)"
+
+            if [ -z "${node}" ]; then
+                printf ''
+                warn "GPU_VENDOR=amd, but no DRM render node (/dev/dri/renderD*) is visible in this container."
+                warn "Pass the GPU through: Unraid adds '--device=/dev/dri' under Extra Parameters, plain docker run takes '--device /dev/dri'."
+                warn "The host also needs the amdgpu kernel driver loaded."
+                warn "Falling back to software encoding."
+                return 0
+            fi
+
+            # vce_h264   AMD VCE through AMF. Only exists in a HandBrakeCLI built
+            #            with --enable-vce (see Dockerfile.vce), and HandBrake only
+            #            lists it once AMD's proprietary AMF runtime has actually
+            #            loaded and produced encoder caps.
+            # vaapi_h264 Not in HandBrake 1.11; upstream added VA-API encoders on
+            #            master. Named here so a later base-image bump lights the
+            #            path up with no code change, because ids are looked up.
+            enc="$(hb_pick_encoder vce_h264 vaapi_h264 || true)"
+            if [ -z "${enc}" ]; then
+                printf ''
+                warn "GPU_VENDOR=amd and ${node} exists, but HandBrakeCLI offers neither vce_h264 nor vaapi_h264 here."
+                if hb_have_amf_runtime; then
+                    warn "AMD's AMF runtime IS reachable, so this HandBrakeCLI was simply not built with --enable-vce."
+                    warn "Ubuntu never builds HandBrake with VCE. Build the optional variant (Dockerfile.vce) to get it."
+                else
+                    warn "AMD's AMF runtime (libamfrt64.so*) is not reachable in this container, and Ubuntu does not build"
+                    warn "HandBrake with --enable-vce either, so this image has no AMD hardware encoder at all."
+                    warn "The README's Hardware Encoding section explains what AMD hardware encoding needs."
+                fi
+                warn "Full details in ${GPU_LOG}. Falling back to software encoding."
+                return 0
+            fi
+
+            printf -- '--encoder %s' "${enc}"
+            log "AMD hardware encoding enabled: --encoder ${enc} (render node ${node})"
+            log "diagnostics: ${GPU_LOG}"
+            ;;
+
         *)
             printf ''
-            log "GPU_VENDOR='$1' requested, but this image build ships no GPU acceleration for that vendor yet."
-            log "Falling back to software encoding. Hardware encoding for that vendor arrives in a later release."
+            warn "GPU_VENDOR='${vendor}' is not implemented in this image build — falling back to software encoding."
             ;;
     esac
 }
