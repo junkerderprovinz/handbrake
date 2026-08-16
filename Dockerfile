@@ -249,7 +249,7 @@ ENV S6_KILL_GRACETIME=15000 \
 #                    "intel" needs /dev/dri passed through (amd64 only; the QSV
 #                    runtime is installed above). "amd" needs a HandBrakeCLI
 #                    built with --enable-vce plus AMD's proprietary AMF runtime,
-#                    neither of which this image can ship — see Dockerfile.vce.
+#                    neither of which this image can ship — see Dockerfile.gpu.
 #                    Any vendor that cannot be honoured logs the reason and
 #                    falls back to software encoding.
 # APP_NICENESS     – nice level applied to ghb and to every HandBrakeCLI run

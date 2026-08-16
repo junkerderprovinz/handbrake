@@ -99,10 +99,32 @@ The image stamps its build SHA/date to `/etc/handbrake-build`.
   with well-known default credentials otherwise. No login unless the user sets
   `CUSTOM_USER`/`PASSWORD`; `init-nologin` strips the empty values Unraid sends
   for blank template fields.
-- **GPU support lives in `handbrake-gpu.sh` only.** It resolves `GPU_VENDOR` into
-  the extra `HandBrakeCLI` arguments written to `/run/handbrake/gpu-args`. v1
-  ships none. Never guess an encoder identifier — read it from
-  `/usr/local/share/handbrake-cli-help.txt`.
+- **GPU support lives in `handbrake-gpu.sh` only.** It resolves `GPU_VENDOR`
+  (`none` | `nvidia` | `intel` | `amd`) into the extra `HandBrakeCLI` arguments
+  written to `/run/handbrake/gpu-args`, and writes a diagnostics report to
+  `/config/handbrake-gpu.log`. **Its stdout is a command line, not a log** —
+  every human-readable line goes to stderr, or the text ends up as a
+  `HandBrakeCLI` argument.
+- **Never read hardware encoder availability from
+  `/usr/local/share/handbrake-cli-help.txt`.** libhb lists a hardware encoder
+  only when it is compiled in *and* usable on the machine right now
+  (`hb_video_encoder_is_enabled()`), and that dump is recorded during
+  `docker build` on a GPU-less machine, so it never contains one. Ask the live
+  binary, as `abc`, which is what `hb_load_encoders()` does. Details in
+  `docs/handbrake-capabilities.md`.
+- **Intel QSV detects correctly but the stock package's encode is broken.**
+  Ubuntu compiles `handbrake-cli` with `--enable-qsv` on amd64, but a
+  confirmed, independently-reproduced bug in that specific build makes every
+  real QSV encode fail at the muxer
+  ([HandBrake/HandBrake#7962](https://github.com/HandBrake/HandBrake/issues/7962)).
+  `Dockerfile.gpu` (optional, `just build-gpu-full`, not published, not
+  CI-gated) rebuilds `HandBrakeCLI` from source with `--enable-qsv
+  --enable-vce --enable-nvenc`, which fixes QSV completely and adds AMD VCE
+  (Ubuntu never passes `--enable-vce`). Verified end to end on real Intel
+  hardware; see `docs/hardware-encoding-intel.md`.
+- **NVIDIA NVENC and Intel QSV are verified on real hardware; AMD VCE is
+  not.** There is no AMD GPU to test on. Do not add a claim that VCE has been
+  verified. CI asserts the runtime libraries and the fallback logic only.
 - `rootfs/**` and every `*.sh` MUST stay **LF** (see `.gitattributes`); CRLF
   breaks the shebang scripts inside the image.
 - **German** chat/vault, **English** repo. No AI attribution in commits or code.

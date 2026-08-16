@@ -406,7 +406,7 @@ gpu_args_for_vendor() {
             fi
 
             # vce_h264   AMD VCE through AMF. Only exists in a HandBrakeCLI built
-            #            with --enable-vce (see Dockerfile.vce), and HandBrake only
+            #            with --enable-vce (see Dockerfile.gpu), and HandBrake only
             #            lists it once AMD's proprietary AMF runtime has actually
             #            loaded and produced encoder caps.
             # vaapi_h264 Not in HandBrake 1.11; upstream added VA-API encoders on
@@ -418,7 +418,7 @@ gpu_args_for_vendor() {
                 warn "GPU_VENDOR=amd and ${node} exists, but HandBrakeCLI offers neither vce_h264 nor vaapi_h264 here."
                 if hb_have_amf_runtime; then
                     warn "AMD's AMF runtime IS reachable, so this HandBrakeCLI was simply not built with --enable-vce."
-                    warn "Ubuntu never builds HandBrake with VCE. Build the optional variant (Dockerfile.vce) to get it."
+                    warn "Ubuntu never builds HandBrake with VCE. Build the optional variant (Dockerfile.gpu) to get it."
                 else
                     warn "AMD's AMF runtime (libamfrt64.so*) is not reachable in this container, and Ubuntu does not build"
                     warn "HandBrake with --enable-vce either, so this image has no AMD hardware encoder at all."

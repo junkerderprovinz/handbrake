@@ -156,8 +156,8 @@ this CPU.
 Ubuntu's own package already claims to build it.** Ubuntu's flag is honest
 about what got compiled in; it says nothing about whether the resulting
 binary actually works. See `Dockerfile.gpu` for the build (30-60 minutes on
-8 cores, much faster on more; not published, not CI-gated, `just
-build-gpu-full`).
+8 cores; measured `2m51s` on this 32-core machine, `docker build --no-cache`;
+not published, not CI-gated, `just build-gpu-full`).
 
 ## 5. What still cannot be verified here
 

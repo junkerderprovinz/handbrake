@@ -89,9 +89,9 @@ confirms QSV needs only two runtime packages (`libmfx-gen1.2`,
 `intel-media-va-driver-non-free`) since the oneVPL dispatcher (`libvpl2`) is
 already a dependency of the apt-installed package — no rebuild. AMD VCE is
 the one real exception: the shipped binary has no VCE code path at all, and
-Plan 3's separate `Dockerfile.vce` (source build with `--enable-vce` plus
-AMD's proprietary AMF runtime) is the already-designed, correct answer for
-that case.
+the optional `Dockerfile.gpu` (source build with `--enable-vce` plus AMD's
+proprietary AMF runtime) is the correct answer for that case — see the
+"Optional full-GPU build variant" section below.
 
 ## Container formats (`-f/--format`)
 
@@ -272,8 +272,9 @@ See `Dockerfile.gpu` and the README's Hardware Encoding section.
 ### Optional full-GPU build variant (`Dockerfile.gpu`)
 
 Recorded on `2026-08-16` from `handbrake:gpu-full`, built at commit `7c3b030`
-with `docker build -f Dockerfile.gpu`. Not published; users build it
-themselves (`just build-gpu-full`).
+with `docker build -f Dockerfile.gpu` (measured `2m51s` on a 32-core machine,
+`docker build --no-cache`). Not published; users build it themselves
+(`just build-gpu-full`).
 
 **This variant exists for two independent reasons, not one.** AMD VCE is
 missing from the stock package entirely (previous section). Intel QSV is

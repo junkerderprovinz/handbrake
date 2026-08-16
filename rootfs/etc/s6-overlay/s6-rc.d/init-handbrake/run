@@ -50,8 +50,9 @@ set_env XDG_DATA_HOME   "/config/.local/share"
 set_env XDG_CACHE_HOME  "/config/.cache"
 
 # -- 4) GPU seam --------------------------------------------------------------
-# v1 has no GPU acceleration; the seam exists so the watch daemon never needs to
-# know about vendors. See handbrake-gpu.sh for the extension point.
+# GPU_VENDOR is none | nvidia | intel | amd. The watch daemon never needs to
+# know about vendors itself — handbrake-gpu.sh resolves the vendor into the
+# extra HandBrakeCLI arguments written to /run/handbrake/gpu-args.
 if /usr/local/bin/handbrake-gpu.sh "${GPU_VENDOR:-none}" > /run/handbrake/gpu-args; then
     log "gpu-args: '$(cat /run/handbrake/gpu-args)' (vendor $(cat /run/handbrake/gpu-vendor 2>/dev/null || echo none))"
 else
