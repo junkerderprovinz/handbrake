@@ -49,11 +49,15 @@ editing required.
 6. [Automated Watch-Folder Conversion](#6-automated-watch-folder-conversion)
 7. [Dark Mode](#7-dark-mode)
 8. [Hardware Encoding](#8-hardware-encoding)
-9. [Migrating from jlesage/handbrake](#9-migrating-from-jlesagehandbrake)
-10. [Building Locally](#10-building-locally)
-11. [Troubleshooting](#11-troubleshooting)
-12. [License](#12-license)
-13. [Support this project](#13-support-this-project)
+9. [Conversion Hooks](#9-conversion-hooks)
+10. [Web Desktop Features](#10-web-desktop-features)
+11. [Running More Than One Instance](#11-running-more-than-one-instance)
+12. [Optical Drives](#12-optical-drives)
+13. [Migrating from jlesage/handbrake](#13-migrating-from-jlesagehandbrake)
+14. [Building Locally](#14-building-locally)
+15. [Troubleshooting](#15-troubleshooting)
+16. [License](#16-license)
+17. [Support this project](#17-support-this-project)
 
 <br>
 
@@ -90,6 +94,11 @@ What you get beyond bare HandBrake:
 | Watch-folder conversion | ✅ | ✅ |
 | Browser clipboard | ✅ | ⚠️ |
 | File upload via WebUI | ✅ | ❌ |
+| Web file manager | ✅ on by default | opt-in via `WEB_FILE_MANAGER=1` |
+| Conversion hooks | ✅ | ✅ |
+| Staging on a separate disk | ✅ configurable | ❌ fixed under the output folder |
+| Shared-watch-folder locking | ✅ | ✅ |
+| CJK fonts | ✅ always | opt-in via `ENABLE_CJK_FONT=1` |
 | Multi-arch | ✅ amd64 + arm64 | ✅ |
 | Direct VNC client | ❌ (Selkies only, by design) | ✅ |
 
@@ -186,14 +195,24 @@ names match `jlesage/handbrake` so existing template values keep working.
 | `AUTOMATED_CONVERSION_SOURCE_STABLE_TIME` | `5` | Seconds a file must stop changing before it is picked up |
 | `AUTOMATED_CONVERSION_CHECK_INTERVAL` | `5` | Seconds between watch-folder scans |
 | `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS` | empty | Extra `HandBrakeCLI` arguments appended to every job |
+| `AUTOMATED_CONVERSION_STAGING_DIR` | empty | Where in-progress conversions are written. Empty means `<output>/.handbrake-staging` |
 
 How it behaves:
 
 - A file is only converted once it has been **stable** for
   `AUTOMATED_CONVERSION_SOURCE_STABLE_TIME` seconds, so a file still being
   copied in is never touched.
-- Output is written as `.<name>.<ext>.partial` and renamed only after
-  `HandBrakeCLI` succeeds.
+- Output is written into the **staging directory** and only moved to its final
+  place after `HandBrakeCLI` succeeds, so a media scanner watching `/output`
+  never sees a half-written file. By default the staging directory is a hidden
+  folder under the output root (`<output>/.handbrake-staging`). Map `/staging`
+  to a cache pool and set `AUTOMATED_CONVERSION_STAGING_DIR=/staging` to keep the
+  array out of the write path while a transcode runs. When staging and output are
+  on different filesystems the finished file is copied to a hidden sibling inside
+  the output folder first and then renamed, so the last step stays atomic.
+- If the staging directory cannot be written, the daemon says so loudly and
+  refuses to convert anything instead of failing every file one by one. The GUI
+  keeps working.
 - Processed sources are remembered in
   `/config/handbrake/watch-state/done.list` by path, size and mtime — an
   unchanged source is never converted twice, an edited or re-copied one is.
@@ -489,21 +508,188 @@ usually contains the reason.
 
 <br>
 
-## 9. Migrating from jlesage/handbrake
+## 9. Conversion Hooks
+
+Drop a shell script into `/config/hooks/` and the watch-folder daemon runs it at
+the matching point. The folder is created on first start and always contains an
+up-to-date `.example` for each hook; copy one and remove the `.example` suffix to
+enable it. Hooks are executed with `/bin/sh` and their shebang is ignored, which
+is the same contract `jlesage/handbrake` uses, so scripts written for that image
+work here unchanged.
+
+| Hook | When | Arguments |
+|---|---|---|
+| `pre_conversion.sh` | Before `HandBrakeCLI` starts on a file | `$1` output file, `$2` source file, `$3` preset |
+| `post_conversion.sh` | After every attempt, once the file has reached its final path | `$1` status (`0` = success), `$2` output file, `$3` source file, `$4` preset |
+| `post_watch_folder_processing.sh` | End of a scan pass that converted at least one file | `$1` watch folder |
+| `hb_custom_args.sh` | Just before `HandBrakeCLI`, to add per-file arguments | `$1` source file, `$2` preset. Print the arguments on stdout |
+
+The same values are also in the environment, which is usually easier to read:
+`HB_INPUT`, `HB_OUTPUT`, `HB_STATUS`, `HB_PRESET`, `HB_FORMAT`, `HB_WATCH_DIR`.
+
+Two behaviours worth knowing:
+
+- **A non-zero exit from `pre_conversion.sh` refuses the file.** The conversion
+  is skipped and the source is recorded in `failed.list`, so it is not retried
+  until the file itself changes. Every other hook's exit code is logged and
+  otherwise ignored.
+- `hb_custom_args.sh` output is appended **after**
+  `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS`, so where both set the same flag
+  the hook wins.
+
+Everything a hook prints goes to `/config/handbrake-watch.log`.
+
+<br>
+
+## 10. Web Desktop Features
+
+Most of what other HandBrake images expose through their own variables comes
+straight from the Selkies desktop and needs no configuration at all.
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEB_FILE_MANAGER` | `1` | Serves the data folders at `https://<host>:3001/files/` for browsing, download and upload. `0` removes the endpoint and the sidebar panel |
+| `WEB_FILE_MANAGER_ALLOWED_PATHS` | `AUTO` | `AUTO` publishes the watch folders, the output folder and `/storage`, whichever exist. Otherwise a comma-separated list of absolute paths |
+| `WEB_FILE_MANAGER_DENIED_PATHS` | empty | Comma-separated paths inside the allowed ones that answer `403` |
+| `WEB_TERMINAL` | `0` | `1` enables a terminal on the web desktop with **Ctrl+Alt+T**. `0` disables every terminal program in the container |
+| `WEB_TERMINAL_SHELL_PATH` | `/bin/bash` | The shell that terminal opens |
+| `WEB_NOTIFICATION` | `0` | `1` shows a popup on the web desktop when a conversion finishes or fails |
+
+**File manager.** Upload a video in the browser and it lands in `/watch`, where
+the watch-folder daemon picks it up; browse `/output` and download the result
+without touching a share. `/config` is refused as an allowed path even if you ask
+for it explicitly, because it holds the WebUI's TLS private key. If you expose
+this container beyond your LAN, set `CUSTOM_USER` and `PASSWORD`.
+
+**Terminal.** A keyboard shortcut rather than a separate web page: HandBrake's
+window is maximised, so the desktop's right-click menu cannot be reached. The
+terminal is a real window on the same desktop, streamed like everything else.
+
+**Notifications** are shown by the desktop itself, in the corner of the HandBrake
+tab. They are not browser or operating-system notifications, so you see them
+while the tab is open rather than in the background. Their colours follow
+`HANDBRAKE_THEME`.
+
+**Clipboard** works in both directions out of the box, no variable required. It
+needs the HTTPS port (`3001`): browsers only allow clipboard access on a secure
+origin. Firefox additionally blocks the silent clipboard read the web client uses
+on focus, which can lower-case pasted capitals; set
+`dom.events.testing.asyncClipboard` to `true` in `about:config` if you hit that.
+
+**Audio** works out of the box as well, so there is no variable for it. The
+microphone path is switched off, since a transcoder has no use for one.
+
+**CJK fonts** (Japanese, Korean, Chinese) are always installed. Nothing to enable,
+and filenames or subtitle tracks in those scripts render correctly everywhere in
+the UI.
+
+**HTTPS** is always available on port `3001` with a self-signed certificate that
+is generated on first start and kept in `/config/ssl`.
+
+**Login** is off by default and switched on by setting `CUSTOM_USER` and
+`PASSWORD`, which is the same pattern every container in this fleet uses.
+
+<br>
+
+## 11. Running More Than One Instance
+
+Two independent containers, each with its own `/config`, watch folder and output
+folder, need nothing special: no path outside `/config`, `/watch*`, `/output` and
+`/staging` is shared, and everything else the container writes lives in its own
+`/run`.
+
+Two containers **sharing one watch folder** to convert twice as many files at
+once also works. Each file is claimed with a lock directory in the watch folder,
+so exactly one container converts it. Some ground rules:
+
+- The watch folder must be **writable** by both containers. If it is read-only,
+  locking is off, the log says so, and you must not point a second instance at it.
+- Give each container its own `/config`. The conversion bookkeeping is per
+  container; the lock is what keeps them from colliding.
+- If both containers share one output folder, leave
+  `AUTOMATED_CONVERSION_OVERWRITE_OUTPUT=0` (the default). A file the other
+  container already converted is then simply skipped.
+- Sharing one staging directory is fine. Every in-progress file carries the
+  container's own tag, and on restart a container only cleans up its own
+  leftovers.
+- If a container is killed hard, its lock is cleared automatically the next time
+  it starts. To clear one by hand: `rm -rf /path/to/watch/.handbrake-lock-*` while
+  no conversion is running.
+
+<br>
+
+## 12. Optical Drives
+
+> **Unverified.** The device plumbing is wired and the container is proven to run
+> correctly when no drive is present, but no optical drive was available to test
+> ripping end to end. Treat this section as best effort until somebody reports
+> back. Reports very welcome.
+
+Pass the drive in and HandBrake can use it as a source:
+
+```sh
+docker run -d \
+  --name=handbrake \
+  --device /dev/sr0 \
+  -p 3000:3000 \
+  -p 3001:3001 \
+  -e PUID=99 \
+  -e PGID=100 \
+  -v /mnt/user/appdata/handbrake:/config \
+  -v /mnt/user/media/converted:/output \
+  --restart unless-stopped \
+  ghcr.io/junkerderprovinz/handbrake:latest
+```
+
+In Unraid, add `--device /dev/sr0` under **Extra Parameters**. The container adds
+itself to the group that owns the device automatically, so no permission changes
+on the host should be needed. Open the drive from the GUI with **Open Source**
+and browse to `/dev/sr0`.
+
+ISO images, DVD folders containing `VIDEO_TS` and Blu-ray folders containing
+`BDMV` also work as ordinary sources, and `.iso` files dropped into a watch
+folder are picked up by the automatic converter like any other video.
+
+Commercially encrypted DVDs are **not** supported: the container ships no
+decryption library, and adding one is out of scope for this image.
+
+<br>
+
+## 13. Migrating from jlesage/handbrake
 
 - Ports change: `5800`/`5900` become `3000` (HTTP) and `3001` (HTTPS). There is
   no direct VNC port — Selkies is the only access path, by design.
-- `USER_ID`/`GROUP_ID` become `PUID`/`PGID` (the LinuxServer convention).
-- `DARK_MODE=1` becomes `HANDBRAKE_THEME=dark`, which is already the default.
-- All `AUTOMATED_CONVERSION*` variables listed above keep their names and
-  defaults, so you can copy those values over unchanged.
+- All `AUTOMATED_CONVERSION*` variables keep their names and defaults, so you can
+  copy those values over unchanged.
+- `/config/hooks/` keeps its name and its argument order, so existing hook
+  scripts work without edits.
 - `/config`, `/storage`, `/watch` and `/output` keep their meaning, but the
   `/config` contents are not compatible: start with a fresh appdata folder and
   re-import your custom presets from the GUI.
 
+Variables that changed, and why:
+
+| jlesage | Here | Note |
+|---|---|---|
+| `USER_ID` / `GROUP_ID` | `PUID` / `PGID` | The LinuxServer convention this image is built on |
+| `DARK_MODE=1` | `HANDBRAKE_THEME=dark` | Already the default |
+| `WEB_AUTHENTICATION`, `_USERNAME`, `_PASSWORD` | `CUSTOM_USER`, `PASSWORD` | HTTP basic auth on the WebUI. `WEB_AUTHENTICATION_TOKEN_VALIDITY_TIME` has no counterpart: basic auth has no token to expire |
+| `SECURE_CONNECTION=1` | (none) | HTTPS on port `3001` is always available |
+| `WEB_HOST_CLIPBOARD_SYNC` | (none) | Clipboard sync is always on |
+| `WEB_AUDIO` | (none) | Browser audio is always on. The microphone is off, which a transcoder has no use for |
+| `ENABLE_CJK_FONT` | (none) | CJK fonts are always installed |
+| `KEEP_APP_RUNNING` | (none) | The GUI is always restarted if it exits |
+| `WEB_FILE_MANAGER*`, `WEB_TERMINAL*`, `WEB_NOTIFICATION` | same names | See [Web Desktop Features](#10-web-desktop-features). `WEB_FILE_MANAGER` defaults to `1` here, and `WEB_NOTIFICATION` shows its popups on the web desktop rather than as browser notifications |
+| `VNC_PASSWORD`, `VNC_LISTENING_PORT`, `SECURE_CONNECTION_VNC_METHOD` | (none) | There is no VNC port |
+| `AUTOMATED_CONVERSION_USE_TRASH`, `_TRASH_DIR` | (none) | Not implemented. `AUTOMATED_CONVERSION_KEEP_SOURCE=1` (the default) never deletes a source |
+| `AUTOMATED_CONVERSION_NON_VIDEO_FILE_ACTION`, `_NON_VIDEO_FILE_EXTENSIONS` | (none) | Not implemented. Non-video files in a watch folder are ignored |
+| `AUTOMATED_CONVERSION_SOURCE_MIN_DURATION`, `_SOURCE_MAIN_TITLE_DETECTION` | (none) | Not implemented. Disc sources convert their first title |
+| `AUTOMATED_CONVERSION_NO_GUI_PROGRESS` | (none) | The watch daemon never draws in the GUI, so there is nothing to hide |
+| `INSTALL_PACKAGES`, `PACKAGES_MIRROR` | (none) | Build a derived image instead |
+
 <br>
 
-## 10. Building Locally
+## 14. Building Locally
 
 ```sh
 git clone https://github.com/junkerderprovinz/handbrake.git
@@ -517,7 +703,7 @@ image; `just convert-test` drops a generated clip into its watch folder.
 
 <br>
 
-## 11. Troubleshooting
+## 15. Troubleshooting
 
 **The WebUI is black on the first start.** The desktop is up before HandBrake
 has drawn its window. Wait for `HANDBRAKE IS READY` in `docker logs handbrake`.
@@ -569,6 +755,32 @@ If the job log names a software encoder, your preset is a hardware preset the
 container deliberately did not override, or your custom args set `--encoder`
 themselves — custom args are applied last and win.
 
+**`/files/` is empty or returns 404.** Check the startup log:
+`docker logs handbrake 2>&1 | grep handbrake-web`. Every published folder is
+listed there as `/files/<name>/ -> <path>`. A folder that is not mounted is not
+published. If a path was refused, the log says why.
+
+**A conversion never starts and the log mentions the staging directory.** The
+staging directory is not writable. Fix the owner of the mapped host folder
+(`chown nobody:users /mnt/user/<share>`) or point
+`AUTOMATED_CONVERSION_STAGING_DIR` somewhere writable.
+
+**Ctrl+Alt+T does nothing.** Confirm `WEB_TERMINAL=1` and look for
+`terminal keybind installed` in `docker logs handbrake`. Some browser extensions
+capture the shortcut before the page sees it; try another browser or a private
+window.
+
+**A file in a shared watch folder is never converted.** A lock left behind by a
+container that no longer exists blocks it. With no conversion running:
+
+```sh
+rm -rf /mnt/user/<watch-share>/.handbrake-lock-*
+```
+
+**A hook does not run.** It must be at `/config/hooks/<name>.sh` without the
+`.example` suffix, and readable by the container user. Its output and any error
+are in `/config/handbrake-watch.log`.
+
 **Which image am I actually running?**
 
 ```sh
@@ -577,7 +789,7 @@ docker exec handbrake cat /etc/handbrake-build
 
 <br>
 
-## 12. License
+## 16. License
 
 This wrapper is AGPL-3.0-only (see [`LICENSE`](LICENSE)). HandBrake itself is
 GPL-2.0 and its artwork is CC BY-SA 4.0 — every bundled component and its
@@ -585,7 +797,7 @@ licence is listed in [`NOTICE`](NOTICE).
 
 <br>
 
-## 13. Support this project
+## 17. Support this project
 
 HandBrake for Unraid is a one-person project. I write, test, and support it
 myself, in whatever free time is left after work. Found a bug or have an idea?

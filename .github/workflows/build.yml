@@ -237,6 +237,146 @@ jobs:
           echo "✅ smoke gate passed on ${{ matrix.arch }}"
           docker rm -f "$name" >/dev/null
 
+      # ---------------------------------------------------------------------
+      # FEATURE-PARITY GATE. Plan 1's smoke gate proves the container boots and
+      # transcodes with the DEFAULT environment. This one boots a second
+      # container with the parity features switched on and proves each of them
+      # actually does something: the file manager serves the data mounts, denied
+      # paths answer 403, the terminal binary is unlocked and keybound, dunst
+      # runs, hooks fire with the documented arguments, and the staging directory
+      # is used and left clean.
+      # ---------------------------------------------------------------------
+      - name: Feature-parity gate — ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          img=handbrake:smoke-${{ matrix.arch }}
+          name=hb-parity
+
+          fail() {
+            echo "::error::$1"
+            echo "---- container log ----"
+            docker logs "$name" 2>&1 | tail -n 150 || true
+            echo "---- watch job log ----"
+            docker exec "$name" cat /config/handbrake-watch.log 2>/dev/null | tail -n 60 || true
+            docker rm -f "$name" >/dev/null 2>&1 || true
+            exit 1
+          }
+
+          echo "== boot with the parity features on =="
+          docker run -d --name "$name" \
+            -p 3100:3000 -p 3101:3001 \
+            -e CUSTOM_USER=parity \
+            -e PASSWORD=parity-secret \
+            -e WEB_TERMINAL=1 \
+            -e WEB_NOTIFICATION=1 \
+            -e WEB_FILE_MANAGER_DENIED_PATHS=/output/private \
+            -e AUTOMATED_CONVERSION_STAGING_DIR=/staging \
+            "$img"
+
+          CURL="curl -k -s -u parity:parity-secret"
+
+          deadline=$((SECONDS + 240))
+          webui=0
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            c=$($CURL -o /dev/null -w '%{http_code}' --max-time 5 https://localhost:3101/ || true)
+            if [ -n "$c" ] && [ "$c" != "000" ]; then echo "WebUI responded after ${SECONDS}s (HTTP $c)"; webui=1; break; fi
+            if [ -z "$(docker ps -q --filter "name=$name")" ]; then fail "parity container exited early"; fi
+            sleep 2
+          done
+          [ "$webui" -eq 1 ] || fail "the parity container's WebUI did not respond within 240s"
+
+          echo "== authentication: the house pattern, not a second variable set =="
+          anon=$(curl -k -s -o /dev/null -w '%{http_code}' --max-time 10 https://localhost:3101/ || true)
+          [ "$anon" = "401" ] || fail "expected 401 without credentials, got '${anon}' — CUSTOM_USER/PASSWORD did not enable basic auth"
+          auth=$($CURL -o /dev/null -w '%{http_code}' --max-time 10 https://localhost:3101/ || true)
+          [ "$auth" = "200" ] || fail "expected 200 with credentials, got '${auth}'"
+
+          echo "== web file manager =="
+          aliases=$(docker exec "$name" sh -c 'grep -c "alias /run/handbrake/webfm/;" /etc/nginx/sites-available/default' || echo 0)
+          [ "$aliases" = "2" ] || fail "expected the farm alias in both nginx server blocks, found ${aliases} — did init-handbrake-web run before init-nginx?"
+          docker exec "$name" sh -c 'test -L /run/handbrake/webfm/output && test -L /run/handbrake/webfm/watch' \
+            || fail "the file-manager farm is missing the /output or /watch symlink"
+          $CURL https://localhost:3101/files/ | grep -q 'output' \
+            || fail "/files/ does not list the output folder"
+          upload=$(docker exec "$name" cat /run/s6/container_environment/SELKIES_UPLOAD_DIR 2>/dev/null || echo "")
+          [ "$upload" = "/watch" ] || fail "expected uploads to land in /watch, got '${upload}'"
+
+          echo "== denied paths =="
+          docker exec "$name" sh -c 'mkdir -p /output/private /output/publicish; echo x > /output/private/secret.txt; echo y > /output/publicish/ok.txt'
+          d1=$($CURL -o /dev/null -w '%{http_code}' https://localhost:3101/files/output/private/ || true)
+          d2=$($CURL -o /dev/null -w '%{http_code}' https://localhost:3101/files/output/private/secret.txt || true)
+          d3=$($CURL -o /dev/null -w '%{http_code}' https://localhost:3101/files/output/publicish/ || true)
+          [ "$d1" = "403" ] || fail "denied directory returned ${d1}, expected 403"
+          [ "$d2" = "403" ] || fail "denied file returned ${d2}, expected 403"
+          [ "$d3" = "200" ] || fail "a sibling of the denied path returned ${d3}, expected 200 — the deny location is over-matching"
+
+          echo "== web terminal =="
+          mode=$(docker exec "$name" stat -c '%A' /usr/bin/xterm)
+          case "$mode" in -rwx*) : ;; *) fail "WEB_TERMINAL=1 but /usr/bin/xterm is ${mode}" ;; esac
+          docker exec "$name" sh -c 'grep -q handbrake-terminal.sh /config/.config/openbox/rc.xml' \
+            || fail "the Ctrl+Alt+T keybind is not in /config/.config/openbox/rc.xml"
+          kb=$(docker exec "$name" sh -c 'grep -c "</keyboard>" /config/.config/openbox/rc.xml')
+          [ "$kb" = "1" ] || fail "openbox rc.xml has ${kb} </keyboard> elements — the keybind insertion corrupted it"
+
+          echo "== notifications =="
+          docker exec "$name" sh -c 'pgrep -x dunst >/dev/null' || fail "WEB_NOTIFICATION=1 but dunst is not running"
+          docker exec "$name" sh -c 'grep -q "^DISPLAY=" /run/handbrake/session-env' \
+            || fail "/run/handbrake/session-env has no DISPLAY — the desktop session never wrote it"
+
+          echo "== CJK fonts come from the base, no ENABLE_CJK_FONT needed =="
+          cjk=$(docker exec "$name" sh -c 'fc-list :lang=ja | wc -l')
+          [ "$cjk" -gt 0 ] || fail "no Japanese-capable font in the image"
+
+          echo "== hooks + staging: one real transcode =="
+          # Built as temp files and docker cp'd in, not a shell heredoc: an
+          # embedded heredoc body inside a YAML "|" block scalar has to sit at
+          # the block's OWN indentation or YAML ends the block scalar early,
+          # which breaks the workflow file itself, not just the hook contract.
+          mkdir -p /tmp/hb-hooks
+          printf 'echo "PRE|$1|$2|$3" > /config/hook-pre.txt\n' > /tmp/hb-hooks/pre_conversion.sh
+          printf 'echo "POST|$1|$2|$3|$4" > /config/hook-post.txt\n' > /tmp/hb-hooks/post_conversion.sh
+          printf 'echo "FOLDER|$1" > /config/hook-folder.txt\n' > /tmp/hb-hooks/post_watch_folder_processing.sh
+          docker exec "$name" mkdir -p /config/hooks
+          docker cp /tmp/hb-hooks/pre_conversion.sh "$name":/config/hooks/pre_conversion.sh
+          docker cp /tmp/hb-hooks/post_conversion.sh "$name":/config/hooks/post_conversion.sh
+          docker cp /tmp/hb-hooks/post_watch_folder_processing.sh "$name":/config/hooks/post_watch_folder_processing.sh
+          docker exec "$name" chown -R abc:abc /config/hooks
+
+          command -v ffmpeg >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; }
+          ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=15:duration=2 \
+                 -c:v libx264 -pix_fmt yuv420p /tmp/hb-parity.mkv
+          docker cp /tmp/hb-parity.mkv "$name":/watch/hb-parity.mkv
+          docker exec "$name" chown abc:abc /watch/hb-parity.mkv
+
+          converted=0
+          deadline=$((SECONDS + 300))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            if docker exec "$name" test -s /output/hb-parity.mp4 2>/dev/null; then converted=1; break; fi
+            sleep 3
+          done
+          [ "$converted" -eq 1 ] || fail "the parity container never produced /output/hb-parity.mp4 within 300s"
+
+          # The post-folder hook fires at the end of the pass, so give the loop
+          # one more interval to come round.
+          sleep 15
+
+          docker exec "$name" sh -c 'cat /config/hook-pre.txt' | grep -q '^PRE|/output/hb-parity.mp4|/watch/hb-parity.mkv|' \
+            || fail "pre_conversion.sh did not receive (output, source, preset) in that order"
+          docker exec "$name" sh -c 'cat /config/hook-post.txt' | grep -q '^POST|0|/output/hb-parity.mp4|/watch/hb-parity.mkv|' \
+            || fail "post_conversion.sh did not receive (status, output, source, preset) in that order"
+          docker exec "$name" sh -c 'cat /config/hook-folder.txt' | grep -q '^FOLDER|/watch$' \
+            || fail "post_watch_folder_processing.sh did not receive the watch folder"
+
+          docker exec "$name" sh -c 'ls -A /staging | grep -q .' \
+            && fail "the staging directory still holds files after a successful conversion"
+          docker exec "$name" sh -c 'ls -a /output | grep -qE "\.partial$|\.moving$"' \
+            && fail "a .partial or .moving file was left behind in /output"
+          docker exec "$name" sh -c 'ls -a /watch | grep -q handbrake-lock' \
+            && fail "a watch-folder lock was not released"
+
+          echo "✅ feature-parity gate passed on ${{ matrix.arch }}"
+          docker rm -f "$name" >/dev/null
+
       # CVE scan of the locally-loaded smoke image. Report-only: exit-code 0 so
       # a HIGH/CRITICAL finding never blocks the build — results land in the
       # repo's Security tab. ignore-unfixed hides CVEs with no upstream fix.

@@ -1,0 +1,15 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# -----------------------------------------------------------------------------
+# init-handbrake-web — the WEB_* translation layer, PRE-nginx half
+# -----------------------------------------------------------------------------
+# Ordered before the base's init-nginx by
+# init-nginx/dependencies.d/init-handbrake-web. That is load-bearing: init-nginx
+# bakes $FILE_MANAGER_PATH into /etc/nginx/sites-available/default and deletes
+# the entire files{} block when SELKIES_FILE_TRANSFERS carries no "download",
+# so these values have to exist before it runs.
+#
+# dependencies.d/init-os-end keeps it late enough that init-adduser has already
+# remapped abc to PUID/PGID.
+# -----------------------------------------------------------------------------
+exec /usr/local/bin/handbrake-web.sh pre-nginx

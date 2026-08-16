@@ -1,0 +1,17 @@
+#!/bin/sh
+# HandBrake post-watch-folder hook.
+#
+# ENABLE IT: copy this file to /config/hooks/post_watch_folder_processing.sh.
+#
+# Runs once at the end of a scan pass over a watch folder, and only when that
+# pass actually converted at least one file. An idle container never calls it.
+#   $1  the watch folder that was just processed
+#
+# Also in the environment: HB_WATCH_DIR HB_PRESET HB_FORMAT.
+#
+# Typical use: kick a media-library rescan now that new files exist.
+#
+# Hooks are executed with /bin/sh; the shebang above is ignored.
+
+echo "post_watch_folder_processing: finished a pass over ${1}"
+exit 0

@@ -1,0 +1,23 @@
+#!/bin/sh
+# HandBrake custom-argument hook.
+#
+# ENABLE IT: copy this file to /config/hooks/hb_custom_args.sh.
+#
+# Runs just before HandBrakeCLI and decides extra arguments per file.
+#   $1  source file
+#   $2  HandBrake preset
+#
+# Print ONE space-separated line of extra HandBrakeCLI arguments on stdout, or
+# print nothing to add nothing. Anything on stderr goes to
+# /config/handbrake-watch.log.
+#
+# The arguments are appended AFTER AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS, so
+# where both set the same flag this hook wins.
+#
+# Hooks are executed with /bin/sh; the shebang above is ignored.
+
+case "${1}" in
+    *.mkv) echo "--all-subtitles" ;;
+    *)     : ;;
+esac
+exit 0

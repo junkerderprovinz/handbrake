@@ -22,12 +22,15 @@ part of the runtime.
     is used**: the Selkies base rewrites `/config` and restores openbox's
     `rc.xml` in `init-selkies-config`, which runs *after* the legacy cont-init
     stage, so anything written there can be silently undone.
-    Services: `init-nologin`, `init-handbrake` (oneshots),
-    `svc-handbrake-watch`, `svc-handbrake-ready` (longruns).
+    Services: `init-nologin`, `init-handbrake`, `init-handbrake-web`,
+    `init-handbrake-web-post` (oneshots), `svc-handbrake-watch`,
+    `svc-handbrake-ready` (longruns).
   - `rootfs/usr/local/bin/` — `handbrake-theme.sh`, `handbrake-gpu.sh`,
-    `handbrake-watch.sh`, `print-banner.sh`.
-  - `rootfs/defaults/` — `autostart` (openbox session, POSIX sh only) and
-    `startwm.sh`.
+    `handbrake-watch.sh`, `handbrake-web.sh`, `handbrake-terminal.sh`,
+    `handbrake-notify.sh`, `print-banner.sh`.
+  - `rootfs/defaults/` — `autostart` (openbox session, POSIX sh only),
+    `startwm.sh`, and `hooks/*.example` (the conversion-hook templates copied to
+    `/config/hooks` on every start).
 - `.github/workflows/` — `build.yml`, `lint.yml`, `release.yml`,
   `registry-cleanup.yml`.
 - `.github/release-notes/<tag>.md` — per-release notes consumed by `release.yml`.
@@ -99,6 +102,35 @@ The image stamps its build SHA/date to `/etc/handbrake-build`.
   with well-known default credentials otherwise. No login unless the user sets
   `CUSTOM_USER`/`PASSWORD`; `init-nologin` strips the empty values Unraid sends
   for blank template fields.
+- **The `WEB_*` variables are a translation layer, not a feature.** Everything in
+  `handbrake-web.sh` maps a jlesage-style name onto something the Selkies base
+  already has. Before adding another one, check the base first: clipboard, audio,
+  HTTPS, CJK fonts and basic auth are all already provided and deliberately have
+  **no** variable here.
+- **`handbrake-web.sh` runs in two phases and the ordering is load-bearing.**
+  `pre-nginx` must run before the base's `init-nginx`, which bakes
+  `$FILE_MANAGER_PATH` into `/etc/nginx/sites-available/default` and deletes the
+  whole `files {}` block when `SELKIES_FILE_TRANSFERS` has no `download`.
+  `post-config` must run after `init-selkies-config`, which restores
+  `/etc/xdg/openbox/rc.xml` from its `.bak` on every start. Collapsing the two
+  oneshots into one silently breaks whichever half loses.
+- **All of `handbrake-web.sh` logs to stderr.** `resolve_allowed()` returns its
+  result on stdout, and a log line mixed into that stream would become a
+  published path.
+- **nginx workers run as `www-data`, not `abc`.** Anything the file manager must
+  serve has to be world-readable. The symlink farm lives on tmpfs at
+  `/run/handbrake/webfm` and is chmod 0755 explicitly for that reason.
+- **`/config` is refused as a file-manager path** because `/config/ssl/cert.key`
+  is the WebUI's TLS private key. Do not "fix" that by relaxing
+  `FORBIDDEN_PATHS`.
+- **The hook argument order is jlesage's, verbatim.** It is the whole point:
+  a hook copied from that image has to keep working. Changing it is a breaking
+  change and needs a major bump.
+- **Optical-drive support is wired but unverified.** `ATTACHED_DEVICES_PERMS`
+  activates the base's own `init-device-perms`; no drive was ever available to
+  test a rip. The README says so and must keep saying so until someone confirms
+  it. `/dev/sg*` is deliberately not in that list: on a NAS that group owns every
+  raw disk.
 - **GPU support lives in `handbrake-gpu.sh` only.** It resolves `GPU_VENDOR`
   (`none` | `nvidia` | `intel` | `amd`) into the extra `HandBrakeCLI` arguments
   written to `/run/handbrake/gpu-args`, and writes a diagnostics report to
