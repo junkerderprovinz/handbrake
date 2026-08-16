@@ -73,6 +73,39 @@ GUI_LOG="/config/handbrake-gui.log"
 # container log stays readable and the READY banner is not buried; only the
 # concise status lines below reach `docker logs`.
 : > "${GUI_LOG}" 2>/dev/null || true
+
+# --- Session handoff ---------------------------------------------------------
+# The s6-supervised watch daemon runs outside this desktop session and therefore
+# has neither its DISPLAY nor its D-Bus address (startwm.sh wraps the session in
+# `dbus-launch --exit-with-session`, so the bus address only exists in here).
+# Hand both over through a file init-handbrake-web pre-created with abc
+# ownership; handbrake-notify.sh reads it back. Single quotes because a D-Bus
+# address contains "=" and "," and must survive being sourced verbatim.
+{
+    printf "DISPLAY='%s'\n"                  "${DISPLAY:-:1}"
+    printf "DBUS_SESSION_BUS_ADDRESS='%s'\n" "${DBUS_SESSION_BUS_ADDRESS:-}"
+    printf "XAUTHORITY='%s'\n"               "${XAUTHORITY:-}"
+} > /run/handbrake/session-env 2>/dev/null \
+    || echo "[handbrake-autostart] could not write /run/handbrake/session-env — desktop notifications will stay silent" >&2
+
+# --- Desktop notification daemon (WEB_NOTIFICATION) --------------------------
+# dunst ships in the Selkies base but nothing starts it. Its style comes from
+# /config/.config/dunst/dunstrc, written by handbrake-web.sh from HANDBRAKE_THEME.
+case "$(printf '%s' "${WEB_NOTIFICATION:-0}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on)
+        if command -v dunst >/dev/null 2>&1; then
+            if pgrep -x dunst >/dev/null 2>&1; then
+                echo "[handbrake-autostart] notification daemon already running" >&2
+            else
+                dunst >> "${GUI_LOG}" 2>&1 &
+                echo "[handbrake-autostart] notification daemon (dunst) started" >&2
+            fi
+        else
+            echo "[handbrake-autostart] WEB_NOTIFICATION=1 but dunst is not installed — notifications disabled" >&2
+        fi
+        ;;
+esac
+
 fast_exits=0
 while true; do
     echo "[handbrake-autostart] launching HandBrake GUI (ghb, nice ${NICE_LEVEL})..." >&2
