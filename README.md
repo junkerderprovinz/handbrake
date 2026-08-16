@@ -98,22 +98,24 @@ built around.
 
 | | **This image** | jlesage/handbrake | linuxserver/handbrake |
 |---|:---:|:---:|:---:|
-| Web stack | Selkies (X11, WebRTC/H.264) | noVNC | Selkies (Wayland/PixelFlux, zero-copy) |
+| Web stack | Selkies (X11) | noVNC | Selkies (Wayland) |
 | Base | Ubuntu (glibc) | Alpine (musl) | Arch Linux |
-| NVIDIA NVENC encoding | ✅ | ❌ ([open since 2019](https://github.com/jlesage/docker-handbrake/issues/49)) | manual GUI encode only; no automated-conversion wiring |
-| Intel Quick Sync (QSV) encoding | ✅ verified | ⚠️ frequently broken ([#459](https://github.com/jlesage/docker-handbrake/issues/459), [#430](https://github.com/jlesage/docker-handbrake/issues/430), [#382](https://github.com/jlesage/docker-handbrake/issues/382), more) | manual GUI encode only; no automated-conversion wiring |
-| AMD VCE encoding | wired, unverified (no AMD GPU to test on) | ❌ ([open request](https://github.com/jlesage/docker-handbrake/issues/441)) | manual GUI encode only; no automated-conversion wiring |
-| Dark mode default | ✅ | opt-in via `DARK_MODE=1` | not documented |
-| Watch-folder conversion | ✅ | ✅ | ❌ none |
+| NVIDIA NVENC encoding | ✅ | ❌ [(#49)](https://github.com/jlesage/docker-handbrake/issues/49) | n/a |
+| Intel Quick Sync (QSV) encoding | ✅ | ⚠️ [(#459)](https://github.com/jlesage/docker-handbrake/issues/459) | n/a |
+| AMD VCE encoding | ⚠️ unverified | ❌ [(#441)](https://github.com/jlesage/docker-handbrake/issues/441) | n/a |
+| Dark mode default | ✅ | opt-in (`DARK_MODE=1`) | ❓ |
+| Watch-folder conversion | ✅ | ✅ | ❌ |
 | Browser clipboard | ✅ | ⚠️ | ✅ |
 | File upload via WebUI | ✅ | ❌ | ✅ |
-| Web file manager | ✅ on by default | opt-in via `WEB_FILE_MANAGER=1` | ❌ |
+| Web file manager | ✅ | opt-in (`WEB_FILE_MANAGER=1`) | ❌ |
 | Conversion hooks | ✅ | ✅ | ❌ |
-| Staging on a separate disk | ✅ configurable | ❌ fixed under the output folder | n/a, no conversion feature |
-| Shared-watch-folder locking | ✅ | ✅ | n/a, no conversion feature |
-| CJK fonts | ✅ always | opt-in via `ENABLE_CJK_FONT=1` | not documented |
-| Multi-arch | ✅ amd64 + arm64 | ✅ | ❌ amd64 only |
-| Direct VNC client | ❌ (Selkies only, by design) | ✅ | ❌ (Selkies only, by design) |
+| Staging on a separate disk | ✅ | ❌ | n/a |
+| Shared-watch-folder locking | ✅ | ✅ | n/a |
+| CJK fonts | ✅ | opt-in (`ENABLE_CJK_FONT=1`) | ❓ |
+| Multi-arch | ✅ | ✅ | ❌ amd64 only |
+| Direct VNC client | ❌ | ✅ | ❌ |
+
+✅ works · ❌ doesn't · ⚠️ present but limited · ❓ undocumented · n/a no automated conversion to accelerate/configure
 
 <br>
 
