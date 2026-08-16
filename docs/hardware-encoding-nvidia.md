@@ -83,7 +83,10 @@ So `handbrake-gpu.sh` asks the **running** `HandBrakeCLI` at container start and
 picks the first identifier from its preference list that the binary offers *on
 that machine*. It never hardcodes an identifier and never reads the dump for
 this. One `--help` call is the identifier lookup and the hardware probe at the
-same time. The list as it appears on real NVIDIA hardware is in section 7.
+same time. **The authoritative `nvenc_*` identifier list for this build,
+measured on real NVIDIA hardware, is in section 7** — it includes
+`nvenc_h264`, `nvenc_h265`, `nvenc_h265_10bit`, `nvenc_av1` and
+`nvenc_av1_10bit`.
 
 ## 2. Valid `--encoder-preset` values for NVENC
 
@@ -128,16 +131,29 @@ docker run --rm --entrypoint sh handbrake:dev -c \
    --disable-hw-decoding   Disable hardware decoding of the video track,
 ```
 
-NVDEC is **not** enabled by default by `handbrake-gpu.sh`, on purpose. HandBrake's
-own documentation states that hardware decoding "is usually only beneficial for
-directly feeding an adjacent hardware encoder" and that HandBrake "will
-automatically disable hardware decoding [and] fall back to software decoding
-whenever it [is] necessary for the decoded video to make a roundtrip to the CPU
-and back; essentially, whenever a video filter is enabled, including the
-crop/scale filter"
+**This static text is misleading and must not be trusted for whether NVDEC was
+actually compiled in — measured on real NVENC hardware.** The
+`--enable-hw-decoding` help entry unconditionally names `nvdec` as a valid
+value regardless of whether the feature was compiled in. On the real GPU box
+(section 7), `HandBrakeCLI`'s own runtime diagnostic printed
+`nvdec: is not compiled into this build` on every invocation, while this exact
+help text kept listing `nvdec` as a valid option. `handbrake-gpu.sh` originally
+trusted the static text for this one check and logged a false "NVDEC is
+available" line as a result — fixed to ask the running binary's own diagnostic
+line instead (`hb_nvdec_compiled_in()`), the same live-probe approach already
+used for the encoder list.
+
+NVDEC is **not** enabled by default by `handbrake-gpu.sh` regardless, on
+purpose — this build does not have it compiled in, and even where a build
+does, HandBrake's own documentation states that hardware decoding "is usually
+only beneficial for directly feeding an adjacent hardware encoder" and that
+HandBrake "will automatically disable hardware decoding [and] fall back to
+software decoding whenever it [is] necessary for the decoded video to make a
+roundtrip to the CPU and back; essentially, whenever a video filter is
+enabled, including the crop/scale filter"
 (<https://handbrake.fr/docs/en/latest/technical/video-nvenc.html>). Every stock
-preset enables crop/scale, so switching it on by default would buy nothing while
-adding a decode path to the blast radius. It stays a one-line opt-in.
+preset enables crop/scale, so switching it on by default would buy nothing
+even on a build that has it.
 
 ## 4. HandBrake's own NVENC presets in this build
 
@@ -202,3 +218,125 @@ any time:
 docker exec handbrake cat /run/handbrake/gpu-args   # empty means software encoding
 docker logs handbrake 2>&1 | grep '\[handbrake-gpu\]'
 ```
+
+## 7. Hardware verification (developer-verified)
+
+| | |
+|---|---|
+| Date | `2026-08-16` |
+| Image | `ghcr.io/junkerderprovinz/handbrake@sha256:f3d378f2ceff1daa0667207f4d3ab118d0a4217cceaebbcf5217a7aa8c3fdc47` |
+| Host | Unraid, Nvidia-Driver plugin |
+| GPU | `NVIDIA GeForce RTX 4070 Ti SUPER` |
+| Driver | `610.57.04` |
+| Container | `--runtime=nvidia`, `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`, `GPU_VENDOR=nvidia`, `--cpus=4 --memory=4g` |
+| Source clip | 1920x1080, 30 fps, 180 s, H.264 |
+
+### The container detected the GPU
+
+```text
+[handbrake-gpu] GPU acceleration: NVIDIA NVENC — NVIDIA GeForce RTX 4070 Ti SUPER, 610.57.04
+[handbrake-gpu] encoder library: /usr/lib64/libnvidia-encode.so.1
+[handbrake-gpu] HandBrakeCLI arguments: --encoder nvenc_h264
+[handbrake-gpu] NOTE: every watch-folder job now encodes with 'nvenc_h264' and overrides the video
+[handbrake-gpu]       encoder of AUTOMATED_CONVERSION_PRESET. Put '--encoder <id>' into
+[handbrake-gpu]       AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS to pick a different one.
+```
+
+### Why the check is a live probe, measured on this machine
+
+Same container, same binary, same moment — the live encoder list and the
+build-time dump disagree, because `libhb` filters the live list through
+`hb_nvenc_h264_available()` and the dump was written on a builder with no GPU:
+
+```text
+live HandBrakeCLI --help:
+svt_av1
+svt_av1_10bit
+nvenc_av1
+nvenc_av1_10bit
+ffv1
+x264
+x264_10bit
+nvenc_h264
+x265
+x265_10bit
+x265_12bit
+nvenc_h265
+nvenc_h265_10bit
+mpeg4
+mpeg2
+VP8
+VP9
+VP9_10bit
+dnxhr
+dnxhr_10bit
+ff_prores
+theora
+
+/usr/local/share/handbrake-cli-help.txt (same container):
+(empty)
+```
+
+A dump-based lookup would have reported "no NVENC in this build" on this exact
+working GPU. That is why `handbrake-gpu.sh` asks the running binary.
+
+`--encoder-preset-list nvenc_h264` on this GPU box, closing the loop opened in
+section 2:
+
+```text
+Available --encoder-preset values for 'nvenc_h264' encoder:
+    fastest
+    faster
+    fast
+    medium
+    slow
+    slower
+    slowest
+```
+
+Identical to the GPU-less measurement in section 2 — `--encoder-preset-list`
+resolves by name against the static encoder table, so it does not depend on
+hardware presence.
+
+### HandBrake used the NVENC encoder
+
+```text
+=== 2026-08-16T07:22:51+02:00 HandBrakeCLI --preset General/Very Fast 1080p30 --input /watch/nvenc-run.mkv --output /output/.nvenc-run.mp4.partial --format av_mp4 --encoder nvenc_h264
+[07:22:51]    + encoder: H.264 (NVEnc)
+[07:22:51] encavcodecInit: H.264 (Nvidia NVENC)
+```
+
+### The GPU encoder was busy during the run
+
+`nvidia-smi --query-gpu=utilization.gpu,utilization.encoder,utilization.decoder`
+sampled every 2 s during the run:
+
+```text
+utilization.gpu [%], utilization.encoder [%], utilization.decoder [%]
+0 %, 0 %, 0 %
+10 %, 48 %, 0 %
+10 %, 50 %, 0 %
+9 %, 49 %, 0 %
+```
+
+`nvidia-smi pmon` rows naming the job's own process, encoder column 47-50%:
+
+```text
+   gpu        pid  type    sm   mem   enc   dec  command
+     0    2772873     C     6     0    29     -  HandBrakeCLI
+     0    2772873     C     9     0    47     -  HandBrakeCLI
+     0    2772873     C     8     0    48     -  HandBrakeCLI
+     0    2772873     C     9     0    50     -  HandBrakeCLI
+     0    2772873     C     9     0    50     -  HandBrakeCLI
+```
+
+### NVENC versus software, same clip, same CPU limit
+
+| Run | `GPU_VENDOR` | Encoder | Wall clock | Output size |
+|---|---|---|---|---|
+| Hardware | `nvidia` | `nvenc_h264` | `11` s | `4.9 MB` |
+| Software | `none` | x264 | `27` s | `3.2 MB` |
+
+The NVENC output decodes without errors (`ffmpeg -i … -f null -`) and reports
+`codec_name=h264, width=1920, height=1080, nb_frames=5400` (exactly
+180 s × 30 fps).
