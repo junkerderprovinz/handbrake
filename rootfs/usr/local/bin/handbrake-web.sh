@@ -339,7 +339,12 @@ apply_nginx_denies() {
             esac
         done < "${FARM_MAP}"
         [ "${matched}" -eq 1 ] || log "denied path '${d}' is not inside any allowed path — nothing to block"
-    done < <(printf '%s' "${raw}" | tr ',' '\n')
+    # printf '%s\n', not '%s': a `while read` loop silently DROPS the final
+    # line when the input has no trailing newline, so a single denied path (no
+    # comma) was never seen at all — found on the first real boot, where a
+    # WEB_FILE_MANAGER_DENIED_PATHS with one entry produced no log line and no
+    # 403 whatsoever.
+    done < <(printf '%s\n' "${raw}" | tr ',' '\n')
 
     [ -n "${blocks}" ] || return 0
 
