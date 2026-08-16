@@ -211,8 +211,17 @@ jobs:
             || fail "the watch-folder daemon is not running"
 
           echo "== READY banner printed =="
-          docker logs "$name" 2>&1 | grep -q 'HANDBRAKE IS READY' \
-            || fail "the READY banner never printed"
+          # A bare one-shot check here rode on the unrelated ghb wait above and
+          # only worked because that wait happened to already be generous
+          # enough. svc-handbrake-ready is its own longrun with its own
+          # timing, so poll it properly instead of assuming.
+          ready=0
+          deadline=$((SECONDS + 60))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            docker logs "$name" 2>&1 | grep -q 'HANDBRAKE IS READY' && { ready=1; break; }
+            sleep 2
+          done
+          [ "$ready" -eq 1 ] || fail "the READY banner never printed"
 
           echo "== end-to-end transcode =="
           command -v ffmpeg >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; }
