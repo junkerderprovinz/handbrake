@@ -141,6 +141,55 @@ jobs:
           echo "GTK_THEME=${theme}"
           [ "$theme" = "Adwaita:dark" ] || fail "GTK_THEME is '${theme}', expected 'Adwaita:dark' (dark must be the default)"
 
+          echo "== GPU seam: the default must be software encoding =="
+          vend=$(docker exec "$name" cat /run/handbrake/gpu-vendor 2>/dev/null || echo MISSING)
+          args=$(docker exec "$name" cat /run/handbrake/gpu-args 2>/dev/null || echo MISSING)
+          echo "gpu-vendor='${vend}' gpu-args='${args}'"
+          [ "$vend" = "none" ] || fail "gpu-vendor is '${vend}', expected 'none' by default"
+          [ -z "$args" ]       || fail "gpu-args is '${args}', expected empty by default"
+
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            echo "== GPU seam: the Intel QSV runtime must be in the amd64 image =="
+            docker run --rm --entrypoint sh "$img" -c \
+              'test -e /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so' \
+              || fail "iHD_drv_video.so is missing from the amd64 image"
+            docker run --rm --entrypoint sh "$img" -c \
+              'ls /usr/lib/x86_64-linux-gnu/libmfx-gen.so.1.2* >/dev/null 2>&1' \
+              || fail "the oneVPL GPU runtime (libmfx-gen) is missing from the amd64 image"
+            docker run --rm --entrypoint sh "$img" -c 'command -v vainfo >/dev/null' \
+              || fail "vainfo is missing from the amd64 image"
+          else
+            echo "== GPU seam: QSV runtime is correctly absent on ${{ matrix.arch }} =="
+          fi
+
+          # No CI runner has a GPU, so only the fallback path is reachable here.
+          # That is the path every user without the matching hardware hits, and a
+          # regression in it would splice a bogus argument into every conversion.
+          for v in intel amd; do
+            echo "== GPU seam: GPU_VENDOR=${v} without a GPU must fall back loudly =="
+            docker rm -f "hb-gpu-${v}" >/dev/null 2>&1 || true
+            docker run -d --name "hb-gpu-${v}" -e "GPU_VENDOR=${v}" "$img" >/dev/null
+            deadline=$((SECONDS + 180))
+            seen=0
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              if docker exec "hb-gpu-${v}" test -f /run/handbrake/gpu-args 2>/dev/null; then seen=1; break; fi
+              sleep 2
+            done
+            if [ "$seen" -ne 1 ]; then
+              docker logs "hb-gpu-${v}" 2>&1 | tail -n 60
+              docker rm -f "hb-gpu-${v}" >/dev/null 2>&1 || true
+              fail "GPU_VENDOR=${v}: /run/handbrake/gpu-args was never written"
+            fi
+            a=$(docker exec "hb-gpu-${v}" cat /run/handbrake/gpu-args)
+            w=$(docker logs "hb-gpu-${v}" 2>&1 | grep -c "\[handbrake-gpu\] WARNING: GPU_VENDOR=${v}" || true)
+            d=$(docker exec "hb-gpu-${v}" test -s /config/handbrake-gpu.log && echo yes || echo no)
+            echo "GPU_VENDOR=${v}: args='${a}' warnings=${w} diag=${d}"
+            docker rm -f "hb-gpu-${v}" >/dev/null 2>&1 || true
+            [ -z "$a" ]      || fail "GPU_VENDOR=${v} produced args '${a}' on a GPU-less runner; expected empty"
+            [ "$w" -ge 1 ]   || fail "GPU_VENDOR=${v} fell back without explaining why"
+            [ "$d" = "yes" ] || fail "GPU_VENDOR=${v} wrote no /config/handbrake-gpu.log diagnostics"
+          done
+
           echo "== HandBrake GUI is up and STAYS up =="
           pid1=""
           deadline=$((SECONDS + 120))
