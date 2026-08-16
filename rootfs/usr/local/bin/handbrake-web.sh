@@ -83,8 +83,12 @@ safe_path() {
     case "$1" in
         *[\"\\\$\;\{\}\#\`\'\*\?\[\]]*) return 1 ;;
     esac
+    # $(...) strips trailing newlines, so $(printf '\n') is the EMPTY string and
+    # *""* matches everything — that bug once made this function reject every
+    # path unconditionally. $'\n' is a literal newline with no substitution
+    # involved, so nothing strips it.
     case "$1" in
-        *"$(printf '\n')"*) return 1 ;;
+        *$'\n'*) return 1 ;;
     esac
     return 0
 }
