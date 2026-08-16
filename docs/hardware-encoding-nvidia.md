@@ -157,3 +157,48 @@ H.265 NVENC 2160p 4K
 HandBrake ships its own NVENC-named presets out of the box (alongside AMD
 VCN-named ones, e.g. "AMD VCN hardware accelerated AV1"). `handbrake-gpu.sh`
 never overrides a preset that already names an encoder — see Task 4.
+
+## 5. What the host has to provide
+
+| Requirement | Value | Why |
+|---|---|---|
+| Unraid plugin | Nvidia-Driver (ich777) | installs the NVIDIA kernel driver and the NVIDIA container runtime |
+| Container runtime | `--runtime=nvidia` in Extra Parameters | without it the container gets no `/dev/nvidia*` node and no driver libraries |
+| `NVIDIA_VISIBLE_DEVICES` | a GPU UUID from `nvidia-smi -L`, or `all` | selects which GPU is passed in |
+| `NVIDIA_DRIVER_CAPABILITIES` | `compute,video,utility` | `video` injects `libnvidia-encode.so.1` (NVENC/NVDEC), `compute` the CUDA runtime, `utility` `nvidia-smi`. `all` also works |
+| NVIDIA driver | `570.0` or newer | HandBrake's documented NVENC requirement |
+
+Source for the capability meanings:
+<https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/docker-specialized.html>
+— `compute` "required for CUDA and OpenCL applications", `utility` "required for
+using nvidia-smi and NVML", `video` "required for using the Video Codec SDK".
+With the variable unset the runtime defaults to `utility,compute`, i.e. **no
+`video`**, which is why NVENC needs it set explicitly.
+
+Source for the driver requirement:
+<https://handbrake.fr/docs/en/latest/technical/video-nvenc.html> — "NVIDIA
+Graphics Driver 570.0 or later".
+
+## 6. What the container checks at start
+
+`handbrake-gpu.sh` refuses to claim hardware encoding it cannot deliver. With
+`GPU_VENDOR=nvidia` it checks, in this order:
+
+1. an NVIDIA device node exists (`/dev/nvidiactl`, `/dev/nvidia0`, …) — proves the
+   container was started through the NVIDIA container runtime;
+2. `libnvidia-encode.so.1` is present — proves `NVIDIA_DRIVER_CAPABILITIES`
+   includes `video`;
+3. the **running** `HandBrakeCLI` lists an NVENC encoder in a live `--help` call
+   — HandBrake only lists a hardware encoder it can actually use right now, so
+   this single check covers "the build has NVENC" and "the driver/GPU can serve
+   it" at once. The build-time help dump is deliberately not used here: it is
+   recorded without a GPU and never lists a hardware encoder.
+
+Each failing check logs its own error block naming the exact fix, then falls back
+to software encoding for that container start. The effective state is visible at
+any time:
+
+```sh
+docker exec handbrake cat /run/handbrake/gpu-args   # empty means software encoding
+docker logs handbrake 2>&1 | grep '\[handbrake-gpu\]'
+```
