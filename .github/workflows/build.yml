@@ -474,8 +474,7 @@ jobs:
             || fail "ghb never created its own preferences.json on first start"
           docker restart "$name" >/dev/null
           wait_for_webui
-          sleep 5
-          docker logs "$name" 2>&1 | grep -q "wired the manual-conversion GUI hook" \
+          wait_for_log "wired the manual-conversion GUI hook" 30 \
             || fail "init-handbrake never logged wiring the manual-conversion GUI hook on the second start"
           docker exec "$name" sh -c \
             'jq -e ".Preferences.SendFileTo == true and .Preferences.SendFileToTarget == \"/usr/local/bin/handbrake-gui-hook.sh\"" /config/.config/ghb/preferences.json' \
