@@ -66,6 +66,15 @@ fi
 # X11 is the mode the whole Selkies window pipeline is built on; pin the GDK
 # backend so a future base default of Wayland cannot silently change it.
 set_env GDK_BACKEND    "x11"
+# GTK4's default GSK renderer tries a hardware GL context. With GPU_VENDOR=nvidia
+# the NVIDIA container runtime injects its own libGL/libEGL into the image, and
+# GTK4 then intermittently negotiates a GL context against those against Xvfb's
+# purely-software X server, which is not the setup NVIDIA's OpenGL implementation
+# expects: the context creation succeeds but the window renders solid black.
+# Verified live (real GPU-accelerated boot) — cairo (software 2D) has no such
+# issue and costs nothing, since this only draws ghb's UI chrome, never the
+# transcode itself (that goes through NVENC directly, not through this window).
+set_env GSK_RENDERER   "cairo"
 set_env XDG_CONFIG_HOME "/config/.config"
 set_env XDG_DATA_HOME   "/config/.local/share"
 set_env XDG_CACHE_HOME  "/config/.cache"
