@@ -173,8 +173,8 @@ RUN set -eux; \
 # docker cp / the CI smoke gate can drop a file into /watch on a bare run.
 # ---------------------------------------------------------------------------
 RUN set -eux; \
-    mkdir -p /storage /watch /watch2 /watch3 /watch4 /watch5 /output; \
-    chmod 0777 /watch /watch2 /watch3 /watch4 /watch5 /output
+    mkdir -p /storage /watch /watch2 /watch3 /watch4 /watch5 /output /staging; \
+    chmod 0777 /watch /watch2 /watch3 /watch4 /watch5 /output /staging
 
 # ---------------------------------------------------------------------------
 # Skeleton configs + s6-overlay init scripts
@@ -216,13 +216,21 @@ RUN set -eux; \
     echo "handbrake: branded selkies icon at $dst"
 
 # Executable bits for everything we ship (a Windows checkout carries no mode).
+# The hook .example files are deliberately NOT here: hooks are executed with
+# `/bin/sh <file>`, so they never need an executable bit, and leaving them
+# non-executable is a second reminder that a template is not a live hook.
 RUN chmod +x \
     /usr/local/bin/print-banner.sh \
     /usr/local/bin/handbrake-theme.sh \
     /usr/local/bin/handbrake-gpu.sh \
     /usr/local/bin/handbrake-watch.sh \
+    /usr/local/bin/handbrake-web.sh \
+    /usr/local/bin/handbrake-terminal.sh \
+    /usr/local/bin/handbrake-notify.sh \
     /etc/s6-overlay/s6-rc.d/init-nologin/run \
     /etc/s6-overlay/s6-rc.d/init-handbrake/run \
+    /etc/s6-overlay/s6-rc.d/init-handbrake-web/run \
+    /etc/s6-overlay/s6-rc.d/init-handbrake-web-post/run \
     /etc/s6-overlay/s6-rc.d/svc-handbrake-watch/run \
     /etc/s6-overlay/s6-rc.d/svc-handbrake-ready/run \
     /defaults/autostart \
@@ -279,6 +287,69 @@ ENV AUTOMATED_CONVERSION=1 \
     AUTOMATED_CONVERSION_SOURCE_STABLE_TIME=5 \
     AUTOMATED_CONVERSION_CHECK_INTERVAL=5 \
     AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS=
+
+# Staging directory for in-progress conversions. Empty resolves to a hidden
+# folder under the output root (<output>/.handbrake-staging), matching what
+# jlesage/handbrake does. Set it to /staging and map that to a cache pool to keep
+# the array out of the write path during a transcode.
+ENV AUTOMATED_CONVERSION_STAGING_DIR=
+
+# ---------------------------------------------------------------------------
+# Web-surface parity with jlesage/docker-handbrake
+# ---------------------------------------------------------------------------
+# Every variable here maps onto something the Selkies base ALREADY provides.
+# The translation lives in /usr/local/bin/handbrake-web.sh.
+#
+# WEB_FILE_MANAGER               1 (default) publishes the data mounts at
+#                                https://<host>:3001/files/ for browsing,
+#                                download and upload; 0 removes the endpoint and
+#                                the sidebar panel entirely. Defaulting to ON
+#                                (jlesage defaults to OFF) adds no attack surface:
+#                                anyone who can reach the WebUI already has a full
+#                                desktop session with the same file access.
+# WEB_FILE_MANAGER_ALLOWED_PATHS AUTO = the watch folders, the output folder and
+#                                /storage, whichever of them exist. Otherwise a
+#                                comma-separated list of absolute paths. /config
+#                                is refused on purpose: it holds the WebUI's TLS
+#                                private key at /config/ssl/cert.key.
+# WEB_FILE_MANAGER_DENIED_PATHS  Comma-separated paths inside the allowed ones
+#                                that must answer 403.
+# WEB_TERMINAL                   0 (default) makes the base chmod every terminal
+#                                binary in the image to 0000. 1 enables
+#                                Ctrl+Alt+T on the web desktop. A keybind is
+#                                needed because HandBrake's window is maximised
+#                                and the openbox root menu cannot be reached.
+# WEB_TERMINAL_SHELL_PATH        The shell that keybind opens. jlesage defaults to
+#                                /bin/sh; here that is dash, with no history and
+#                                no line editing, so this defaults to bash, which
+#                                is also the container user's login shell.
+# WEB_NOTIFICATION               1 shows conversion results on the web desktop
+#                                through dunst. These are desktop notifications
+#                                inside the streamed session, not browser
+#                                Notification-API popups: the Selkies web client
+#                                has no bridge for those.
+ENV WEB_FILE_MANAGER=1 \
+    WEB_FILE_MANAGER_ALLOWED_PATHS=AUTO \
+    WEB_FILE_MANAGER_DENIED_PATHS= \
+    WEB_TERMINAL=0 \
+    WEB_TERMINAL_SHELL_PATH=/bin/bash \
+    WEB_NOTIFICATION=0
+
+# HandBrake is a transcoder, not a telephone. Audio OUT stays on (the base
+# provides it and HandBrake's preview player uses it, which is why jlesage's
+# WEB_AUDIO has no counterpart here), but an always-on microphone capture path
+# has no use in this container and is switched off.
+ENV SELKIES_MICROPHONE_ENABLED=false
+
+# Optical drives. The LinuxServer base already carries the device-group logic in
+# init-device-perms: for every path listed here it adds the container user to the
+# device's owning group and chmod g+rw's the node. The base ships no default, so
+# this line is the entire optical-drive wiring.
+#
+# /dev/sg* is deliberately NOT listed. On a NAS the generic-SCSI group owns every
+# raw disk, and joining it would hand the container read access to the whole
+# array for no benefit: libdvdread and libdvdnav talk to /dev/srX directly.
+ENV ATTACHED_DEVICES_PERMS="/dev/sr*"
 
 ENV LANG=en_US.UTF-8 \
     LANGUAGE=en_US:en \
