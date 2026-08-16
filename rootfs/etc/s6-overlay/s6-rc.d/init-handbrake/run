@@ -1,0 +1,99 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# -----------------------------------------------------------------------------
+# init-handbrake — config bootstrap, theme, mounts and the GPU seam
+# -----------------------------------------------------------------------------
+# Runs as an s6-rc oneshot AFTER init-selkies-config (dependencies.d), because
+# that base oneshot rewrites parts of /config and restores /etc/xdg/openbox/rc.xml
+# from a .bak on EVERY start. Anything written before it can be silently undone —
+# which is exactly why this repo uses no /etc/cont-init.d scripts at all.
+# -----------------------------------------------------------------------------
+set -e
+
+log() { echo "[init-handbrake] $*"; }
+
+set_env() {
+    printf '%s' "$2" > "/run/s6/container_environment/$1"
+}
+
+mkdir -p /run/s6/container_environment /run/handbrake
+
+# -- 1) Directories -----------------------------------------------------------
+CONFIG_HOME="/config/.config"
+mkdir -p "${CONFIG_HOME}/openbox" \
+         "${CONFIG_HOME}/ghb" \
+         "/config/.local/share" \
+         "/config/.cache" \
+         "/config/.profile.d" \
+         "/config/handbrake/watch-state"
+
+# -- 2) openbox autostart: ALWAYS refreshed from the image --------------------
+cp -af /defaults/autostart "${CONFIG_HOME}/openbox/autostart"
+chmod 0755 "${CONFIG_HOME}/openbox/autostart"
+log "autostart synced from /defaults/autostart"
+
+# -- 3) Theme (HandBrake's native GTK4 dark mode) -----------------------------
+/usr/local/bin/handbrake-theme.sh "${HANDBRAKE_THEME:-dark}" || log "theme hook failed (non-fatal)"
+
+# The desktop session is started by svc-de, which inherits the s6 container
+# environment; the profile snippet in /config covers the paths that do not.
+if [ -f /config/.profile.d/handbrake-theme.sh ]; then
+    _gtk=$(grep '^export GTK_THEME=' /config/.profile.d/handbrake-theme.sh | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "${_gtk}" ] && set_env GTK_THEME "${_gtk}"
+fi
+
+# X11 is the mode the whole Selkies window pipeline is built on; pin the GDK
+# backend so a future base default of Wayland cannot silently change it.
+set_env GDK_BACKEND    "x11"
+set_env XDG_CONFIG_HOME "/config/.config"
+set_env XDG_DATA_HOME   "/config/.local/share"
+set_env XDG_CACHE_HOME  "/config/.cache"
+
+# -- 4) GPU seam --------------------------------------------------------------
+# v1 has no GPU acceleration; the seam exists so the watch daemon never needs to
+# know about vendors. See handbrake-gpu.sh for the extension point.
+if /usr/local/bin/handbrake-gpu.sh "${GPU_VENDOR:-none}" > /run/handbrake/gpu-args; then
+    log "gpu-args: '$(cat /run/handbrake/gpu-args)' (vendor $(cat /run/handbrake/gpu-vendor 2>/dev/null || echo none))"
+else
+    : > /run/handbrake/gpu-args
+    log "WARNING: handbrake-gpu.sh failed — continuing with software encoding"
+fi
+chmod 0644 /run/handbrake/gpu-args
+
+# -- 5) Mount points: ownership + a LOUD warning when they are not writable ---
+# Docker creates a MISSING host path as root:root, which the container user
+# cannot write — conversions would then fail on every single file. chown only
+# the TOP level (no -R) so we never traverse a large media share.
+check_mount() {
+    local dir="$1" role="$2"
+    [ -d "${dir}" ] || return 0
+    chown "${PUID:-911}:${PGID:-911}" "${dir}" 2>/dev/null || true
+    # init-adduser has already remapped abc to PUID/PGID at this point, so
+    # testing as abc is testing as the real runtime user. /usr/bin/test (not the
+    # shell builtin) is what s6-setuidgid execs.
+    if s6-setuidgid abc /usr/bin/test -w "${dir}" 2>/dev/null; then
+        log "${role} ${dir}: writable"
+    else
+        log "WARNING: ${role} ${dir} is NOT writable by the container user (PUID=${PUID:-911})."
+        log "         Automated conversion will fail for this folder. Fix the host share's owner,"
+        log "         e.g. on the Unraid console:  chown nobody:users /mnt/user/<share>"
+    fi
+}
+for w in /watch /watch2 /watch3 /watch4 /watch5; do
+    [ -d "${w}" ] && check_mount "${w}" "watch folder"
+done
+check_mount "${AUTOMATED_CONVERSION_OUTPUT_DIR:-/output}" "output folder"
+
+# -- 6) Ownership of everything we just created -------------------------------
+chown -R "${PUID:-911}:${PGID:-911}" /config/.config /config/.profile.d /config/handbrake 2>/dev/null || true
+
+# -- 7) Diagnostics -----------------------------------------------------------
+if [ -f /etc/handbrake-build ]; then
+    BUILD_SHA=$(grep '^sha='  /etc/handbrake-build | cut -d= -f2)
+    BUILD_DATE=$(grep '^date=' /etc/handbrake-build | cut -d= -f2)
+    log "BUILD: ${BUILD_SHA:0:7}  (${BUILD_DATE})"
+fi
+log "$(head -n 1 /usr/local/share/handbrake-version.txt 2>/dev/null || echo 'HandBrakeCLI version unknown')"
+log "theme=${HANDBRAKE_THEME:-dark}  automated conversion=${AUTOMATED_CONVERSION:-1}  preset='${AUTOMATED_CONVERSION_PRESET:-General/Very Fast 1080p30}'"
+log "init-handbrake done"
+exit 0
