@@ -85,37 +85,35 @@ What you get beyond bare HandBrake:
 - **Multi-arch** — amd64 and arm64, both gated by a CI smoke test that really
   transcodes a clip before anything is published
 
-Two other HandBrake containers are also in Community Applications.
-**[linuxserver/handbrake](https://github.com/linuxserver/docker-handbrake)** is
-the official LinuxServer.io image (Arch Linux base, Selkies desktop, Wayland
-with GPU-accelerated screen streaming): a strong, actively developed GUI, but
-no automated conversion of any kind, so it does not compete on the feature
-this image is built around. **HandBrake-for-Nvidia** is a Community
-Applications template pointing at a third-party fork,
-[`zocker160/handbrake-nvenc`](https://hub.docker.com/r/zocker160/handbrake-nvenc),
-that patches NVENC support onto jlesage's own Alpine codebase; it inherits
-jlesage's noVNC stack and watch-folder feature set as-is (including the bugs
-below) and additionally needs a separate driver plugin (`ich777`'s Nvidia
-Driver) installed first.
+Another HandBrake container is also in Community Applications:
+**[linuxserver/handbrake](https://github.com/linuxserver/docker-handbrake)**,
+the official LinuxServer.io image. It builds on the very same
+[Docker Baseimage Selkies](https://github.com/linuxserver/docker-baseimage-selkies)
+project this image does, just the Arch Linux flavour of it instead of the
+Ubuntu one, and opts into that base's newer Wayland/PixelFlux screen-streaming
+pipeline (`PIXELFLUX_WAYLAND=true`) rather than the classic X11 one this image
+still uses by default. A strong, actively developed GUI, but no automated
+conversion of any kind, so it does not compete on the feature this image is
+built around.
 
-| | **This image** | jlesage/handbrake | linuxserver/handbrake | HandBrake-for-Nvidia |
-|---|:---:|:---:|:---:|:---:|
-| Web stack | **Selkies (WebRTC/H.264)** | noVNC | Selkies (Wayland/PixelFlux) | noVNC |
-| Base | Ubuntu (glibc) | Alpine (musl) | Arch Linux | Alpine (musl), same as jlesage |
-| NVIDIA NVENC encoding | ✅ | ❌ ([open since 2019](https://github.com/jlesage/docker-handbrake/issues/49)) | manual GUI encode only; no automated-conversion wiring | ✅ via the unofficial fork, needs a separate driver plugin |
-| Intel Quick Sync (QSV) encoding | ✅ verified | ⚠️ frequently broken ([#459](https://github.com/jlesage/docker-handbrake/issues/459), [#430](https://github.com/jlesage/docker-handbrake/issues/430), [#382](https://github.com/jlesage/docker-handbrake/issues/382), more) | manual GUI encode only; no automated-conversion wiring | ❌ (same Alpine base as jlesage) |
-| AMD VCE encoding | wired, unverified (no AMD GPU to test on) | ❌ ([open request](https://github.com/jlesage/docker-handbrake/issues/441)) | manual GUI encode only; no automated-conversion wiring | ❌ (same Alpine base as jlesage) |
-| Dark mode default | ✅ | opt-in via `DARK_MODE=1` | not documented | opt-in via `DARK_MODE=1` (jlesage-based) |
-| Watch-folder conversion | ✅ | ✅ | ❌ none | ✅ (jlesage-based) |
-| Browser clipboard | ✅ | ⚠️ | ✅ | ⚠️ (jlesage-based) |
-| File upload via WebUI | ✅ | ❌ | ✅ | ❌ (jlesage-based) |
-| Web file manager | ✅ on by default | opt-in via `WEB_FILE_MANAGER=1` | ❌ | opt-in via `WEB_FILE_MANAGER=1` (jlesage-based) |
-| Conversion hooks | ✅ | ✅ | ❌ | ✅ (jlesage-based) |
-| Staging on a separate disk | ✅ configurable | ❌ fixed under the output folder | n/a, no conversion feature | ❌ (jlesage-based) |
-| Shared-watch-folder locking | ✅ | ✅ | n/a, no conversion feature | ✅ (jlesage-based) |
-| CJK fonts | ✅ always | opt-in via `ENABLE_CJK_FONT=1` | not documented | opt-in via `ENABLE_CJK_FONT=1` (jlesage-based) |
-| Multi-arch | ✅ amd64 + arm64 | ✅ | ❌ amd64 only | ❌ amd64 only |
-| Direct VNC client | ❌ (Selkies only, by design) | ✅ | ❌ (Selkies only, by design) | ✅ (jlesage-based) |
+| | **This image** | jlesage/handbrake | linuxserver/handbrake |
+|---|:---:|:---:|:---:|
+| Web stack | Selkies (X11, WebRTC/H.264) | noVNC | Selkies (Wayland/PixelFlux, zero-copy) |
+| Base | Ubuntu (glibc) | Alpine (musl) | Arch Linux |
+| NVIDIA NVENC encoding | ✅ | ❌ ([open since 2019](https://github.com/jlesage/docker-handbrake/issues/49)) | manual GUI encode only; no automated-conversion wiring |
+| Intel Quick Sync (QSV) encoding | ✅ verified | ⚠️ frequently broken ([#459](https://github.com/jlesage/docker-handbrake/issues/459), [#430](https://github.com/jlesage/docker-handbrake/issues/430), [#382](https://github.com/jlesage/docker-handbrake/issues/382), more) | manual GUI encode only; no automated-conversion wiring |
+| AMD VCE encoding | wired, unverified (no AMD GPU to test on) | ❌ ([open request](https://github.com/jlesage/docker-handbrake/issues/441)) | manual GUI encode only; no automated-conversion wiring |
+| Dark mode default | ✅ | opt-in via `DARK_MODE=1` | not documented |
+| Watch-folder conversion | ✅ | ✅ | ❌ none |
+| Browser clipboard | ✅ | ⚠️ | ✅ |
+| File upload via WebUI | ✅ | ❌ | ✅ |
+| Web file manager | ✅ on by default | opt-in via `WEB_FILE_MANAGER=1` | ❌ |
+| Conversion hooks | ✅ | ✅ | ❌ |
+| Staging on a separate disk | ✅ configurable | ❌ fixed under the output folder | n/a, no conversion feature |
+| Shared-watch-folder locking | ✅ | ✅ | n/a, no conversion feature |
+| CJK fonts | ✅ always | opt-in via `ENABLE_CJK_FONT=1` | not documented |
+| Multi-arch | ✅ amd64 + arm64 | ✅ | ❌ amd64 only |
+| Direct VNC client | ❌ (Selkies only, by design) | ✅ | ❌ (Selkies only, by design) |
 
 <br>
 
