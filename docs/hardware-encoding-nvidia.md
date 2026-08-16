@@ -340,3 +340,55 @@ utilization.gpu [%], utilization.encoder [%], utilization.decoder [%]
 The NVENC output decodes without errors (`ffmpeg -i … -f null -`) and reports
 `codec_name=h264, width=1920, height=1080, nb_frames=5400` (exactly
 180 s × 30 fps).
+
+## 8. Unraid CA template handoff
+
+The canonical template lives in the feed repo, **not here**:
+`junkerderprovinz/unraid-apps` → `handbrake/handbrake.xml`
+(<https://github.com/junkerderprovinz/unraid-apps>). Three changes are needed
+there for GPU support, following the same conventions as the existing entries
+(pipe-separated `Default` renders as a dropdown; the element body is the value
+that is actually applied).
+
+**1. `ExtraParams` — the NVIDIA runtime.** Users without a GPU must not be forced
+to edit this, so `--runtime=nvidia` is documented in the GPU field's description
+rather than baked in:
+
+```xml
+<ExtraParams>--restart=unless-stopped</ExtraParams>
+```
+
+**2. A GPU vendor dropdown** in the UI-preferences block:
+
+```xml
+  <Config Name="GPU Acceleration (GPU_VENDOR)" Target="GPU_VENDOR"
+          Default="none|nvidia" Mode=""
+          Description="none (default) = CPU encoding. nvidia = encode watch-folder jobs on an NVIDIA GPU with NVENC. For nvidia you also need: the Nvidia-Driver plugin, '--runtime=nvidia' in Extra Parameters, the Nvidia GPU UUID below, and NVIDIA_DRIVER_CAPABILITIES=compute,video,utility. Without those the container logs a clear error and keeps encoding on the CPU."
+          Type="Variable" Display="always" Required="false" Mask="false">none</Config>
+```
+
+**3. The two NVIDIA runtime variables**, hidden behind the advanced view so a
+CPU-only user never sees them:
+
+```xml
+  <Config Name="Nvidia GPU UUID (NVIDIA_VISIBLE_DEVICES)" Target="NVIDIA_VISIBLE_DEVICES"
+          Default="" Mode=""
+          Description="Only needed when GPU Acceleration is set to nvidia. Paste the GPU UUID from the Nvidia-Driver plugin page (starts with GPU-), or use 'all'. Also add '--runtime=nvidia' to Extra Parameters."
+          Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="Nvidia Driver Capabilities (NVIDIA_DRIVER_CAPABILITIES)" Target="NVIDIA_DRIVER_CAPABILITIES"
+          Default="compute,video,utility|all" Mode=""
+          Description="Only needed when GPU Acceleration is set to nvidia. 'video' is the capability that injects the NVENC encoder library; the NVIDIA runtime leaves it out by default, which is why this must be set explicitly."
+          Type="Variable" Display="advanced" Required="false" Mask="false">compute,video,utility</Config>
+```
+
+**4. Overview text** — add one line to the `<Overview>` block:
+`• GPU encoding: set GPU Acceleration to nvidia for NVENC hardware transcoding (needs the Nvidia-Driver plugin and --runtime=nvidia).`
+
+After the feed repo is updated, CA needs a re-scan before the new fields show up
+in the template editor.
+
+**Not applied yet.** CA publication for this repo is deliberately held back
+(jdp, 2026-08-16: "erst auf CA veröffentlichen wenn alles fertig ist") until
+every planned feature (Plans 2-4) is done. This section is the paste-ready
+handoff for whenever that happens.
