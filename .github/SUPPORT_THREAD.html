@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<!--
+  Unraid Community Applications support thread for HandBrake.
+  Structure mirrors the sister-app threads (e.g. featherdrop):
+  title -> subtitle -> banner -> badges -> What is this? -> Highlights ->
+  Requirements -> Posting a bug report -> Credits -> disclaimer.
+  Open standalone in a browser, or paste into the Unraid forum editor's source.
+  Title: [Support] junkerderprovinz - HandBrake
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Support] junkerderprovinz - HandBrake</title>
+<style>
+  body { max-width: 900px; margin: 1.5rem auto; padding: 0 1rem;
+         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         line-height: 1.6; color: #1c1c1c; }
+  h1 { text-align: center; font-size: 1.7rem; margin-bottom: .2rem; }
+  .subtitle { text-align: center; color: #666; font-style: italic; margin-top: 0; }
+  h2 { margin-top: 1.9rem; font-size: 1.25rem; }
+  code { background: #f1f1f1; padding: .1em .35em; border-radius: 4px; font-size: .9em; }
+  a { color: #c79a1e; }
+  ul { padding-left: 1.2rem; }
+  li { margin: .25rem 0; }
+  img { border: 0; vertical-align: middle; }
+  hr { border: 0; border-top: 1px solid #ddd; margin: 2rem 0; }
+  .footnote { color: #777; font-size: .9em; font-style: italic; text-align: center; margin-top: 2rem; }
+</style>
+</head>
+<body>
+
+<h1>HandBrake – the full transcoder GUI in your browser, GPU-accelerated on every vendor</h1>
+<p class="subtitle">NVIDIA, Intel and AMD hardware encoding, an automated watch-folder converter, no VNC client — the most complete HandBrake container for Unraid.</p>
+
+<p align="center">
+  <a href="https://github.com/junkerderprovinz/handbrake">
+    <img src="https://raw.githubusercontent.com/junkerderprovinz/handbrake/main/.github/assets/handbrake-banner-logo.png" alt="HandBrake" width="100%">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://unraid.net/community/apps?q=handbrake"><img src="https://raw.githubusercontent.com/junkerderprovinz/handbrake/main/.github/assets/support-buttons/install-on-unraid.svg" alt="Install on Unraid" width="240"></a>
+  &nbsp;
+  <a href="https://github.com/junkerderprovinz/handbrake"><img src="https://raw.githubusercontent.com/junkerderprovinz/handbrake/main/.github/assets/support-buttons/view-on-github.svg" alt="View on GitHub" width="240"></a>
+  &nbsp;
+  <a href="https://buymeacoffee.com/junkerderprovinz"><img src="https://raw.githubusercontent.com/junkerderprovinz/handbrake/main/.github/assets/support-buttons/buy-me-a-coffee.svg" alt="Buy me a coffee" width="240"></a>
+</p>
+
+<h2>What is this?</h2>
+<p>A modern, plug-and-play Docker image for <a href="https://handbrake.fr">HandBrake</a>, the
+open-source video transcoder. You get the <strong>full transcoder GUI in your browser</strong>
+via Selkies, <strong>dark by default</strong> using HandBrake's own native GTK dark mode, plus a
+<strong>watch-folder daemon</strong> that transcodes anything dropped into <code>/watch</code>
+without opening the UI at all. <strong>Hardware encoding is supported on all three major GPU
+vendors</strong> — NVIDIA NVENC, Intel Quick Sync and AMD VCE — which no other HandBrake
+container on Unraid covers. Built on Ubuntu (via
+<a href="https://github.com/linuxserver/docker-baseimage-selkies">linuxserver/baseimage-selkies</a>),
+so NVIDIA's proprietary glibc libraries load without issue, something the Alpine-based community
+image has never been able to ship. Everything is configurable from the Unraid template, no SSH or
+config-file editing required.</p>
+
+<h2>Highlights</h2>
+<ul>
+  <li><strong>GPU-accelerated hardware encoding on every major vendor</strong> — NVIDIA NVENC, Intel Quick Sync (QSV) and AMD VCE — the only HandBrake container on Unraid that covers all three</li>
+  <li><strong>Selkies</strong> instead of noVNC — a hybrid VNC/H.264 web desktop with a real bidirectional browser clipboard, native file upload/download, high-DPI ready, no separate VNC client</li>
+  <li><strong>Dark by default</strong> — HandBrake's own native GTK dark mode, not a repaint; switch to light with one variable</li>
+  <li><strong>Automated watch-folder conversion</strong> — drop a file into <code>/watch</code>, get a transcode in <code>/output</code>; <strong>atomic output</strong> so a media scanner never indexes a half-written file</li>
+  <li><strong>5 conversion hooks</strong> — before/after every job, end of a scan pass, per-file custom arguments, and a hook for conversions started manually in the GUI</li>
+  <li><strong>Staging directory</strong> — keep in-progress transcodes off the array while they run, on a cache pool or elsewhere</li>
+  <li><strong>Web file manager</strong>, a <strong>web terminal</strong> (<code>Ctrl+Alt+T</code>) and <strong>desktop notifications</strong>, all built into the browser session</li>
+  <li><strong>Shared-watch-folder locking</strong> — run two containers against one watch folder to convert twice as many files at once, safely</li>
+  <li>Multi-arch — amd64 + arm64, both gated by a CI smoke test that really transcodes a clip before anything is published</li>
+  <li>Image: <code>ghcr.io/junkerderprovinz/handbrake:latest</code></li>
+</ul>
+
+<h2>Requirements</h2>
+<ul>
+  <li>Unraid 6.10+</li>
+  <li>For NVIDIA hardware encoding: the <strong>Nvidia-Driver</strong> plugin (ich777) and <code>--runtime=nvidia</code> in Extra Parameters</li>
+  <li>For Intel or AMD hardware encoding: <code>--device=/dev/dri</code> in Extra Parameters, and the host's open-source <code>i915</code>/<code>xe</code> (Intel) or <code>amdgpu</code> (AMD) kernel driver</li>
+  <li>A reverse proxy is optional — the container already serves HTTPS itself on port <code>3001</code> with a self-signed certificate</li>
+</ul>
+
+<h2>Posting a bug report</h2>
+<p>Please post:</p>
+<ul>
+  <li>Unraid version (Settings → System Information)</li>
+  <li>Image tag (<code>latest</code> or a pinned <code>vX.Y.Z</code>)</li>
+  <li>Output of <code>docker logs --tail 200 handbrake</code></li>
+  <li>Your <code>GPU_VENDOR</code> setting, and if it's not <code>none</code>, the output of <code>docker exec handbrake cat /config/handbrake-gpu.log</code></li>
+  <li>Whether you changed any <code>AUTOMATED_CONVERSION*</code> variable, or the <code>/watch</code> / <code>/output</code> / <code>/storage</code> mounts</li>
+</ul>
+<p>GitHub issues with the same info are also welcome:
+<a href="https://github.com/junkerderprovinz/handbrake/issues">github.com/junkerderprovinz/handbrake/issues</a>.
+Got AMD hardware, or Intel hardware older than a Gen12 iGPU? A
+<a href="https://github.com/junkerderprovinz/handbrake/issues/new?template=hardware-report.yml">hardware report</a>
+helps close the last unverified gaps.</p>
+
+<h2>Credits</h2>
+<p>Packages <a href="https://handbrake.fr">HandBrake</a> (GPL-2.0, artwork CC BY-SA 4.0) on top of
+<a href="https://github.com/linuxserver/docker-baseimage-selkies">linuxserver/docker-baseimage-selkies</a>
+and the <a href="https://github.com/selkies-project/selkies">Selkies</a> web-desktop project. If
+this saves you a trip to a proprietary transcoding tool, you can
+<a href="https://buymeacoffee.com/junkerderprovinz">buy me a coffee</a>.</p>
+
+<hr>
+
+<p class="footnote">Self-hosted, AGPL-3.0-licensed wrapper around GPL-2.0 HandBrake — you run it, you own your data and the responsibility.</p>
+
+</body>
+</html>
