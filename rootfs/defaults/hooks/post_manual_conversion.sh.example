@@ -1,0 +1,19 @@
+#!/bin/sh
+# HandBrake manual-conversion hook.
+#
+# ENABLE IT: copy this file to /config/hooks/post_manual_conversion.sh.
+#
+# Runs after a conversion you started yourself in the GUI (not the watch-folder
+# daemon) finishes. This uses HandBrake's own "Send file to" preference
+# (Preferences > When Done in the GUI), so the contract is narrower than the
+# automated-conversion hooks:
+#   $1  the finished output file
+#
+# That is genuinely all HandBrake's GUI hands over: no source file, no preset
+# name, no status. It also only ever runs on SUCCESS — HandBrake does not call
+# this for a cancelled or failed job.
+#
+# Hooks are executed with /bin/sh; the shebang above is ignored.
+
+echo "post_manual_conversion: ${1}"
+exit 0

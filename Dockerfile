@@ -227,6 +227,7 @@ RUN chmod +x \
     /usr/local/bin/handbrake-web.sh \
     /usr/local/bin/handbrake-terminal.sh \
     /usr/local/bin/handbrake-notify.sh \
+    /usr/local/bin/handbrake-gui-hook.sh \
     /etc/s6-overlay/s6-rc.d/init-nologin/run \
     /etc/s6-overlay/s6-rc.d/init-handbrake/run \
     /etc/s6-overlay/s6-rc.d/init-handbrake-web/run \

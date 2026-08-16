@@ -546,6 +546,18 @@ Two behaviours worth knowing:
 
 Everything a hook prints goes to `/config/handbrake-watch.log`.
 
+**A fifth hook, `post_manual_conversion.sh`, covers conversions you start
+yourself in the GUI**, not just the watch-folder daemon. It rides on
+HandBrake's own "Send file to" preference (Preferences → When Done), which
+this image wires up automatically, so there is nothing to configure beyond
+copying the `.example` file. The contract is narrower, because it is genuinely
+all HandBrake's GUI hands over: `$1` is the finished output file only, no
+source path, no preset, and it only fires on a successful encode. This wiring
+activates from the **second** container start onward — on a brand-new
+`/config`, HandBrake has not created its own preferences file yet on the
+first boot, and this image only ever patches an existing one rather than
+overwriting HandBrake's real defaults.
+
 <br>
 
 ## 10. Web Desktop Features
