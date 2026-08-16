@@ -408,6 +408,21 @@ jobs:
             [ "$up" -eq 1 ] || fail "the WebUI did not respond within 180s"
           }
 
+          # svc-handbrake-watch is a separate longrun from svc-nginx, with no
+          # dependency between them — the WebUI answering does NOT guarantee
+          # the watch daemon has printed its startup log lines yet. A bare
+          # one-shot grep right after wait_for_webui raced and failed on a
+          # slower runner; poll instead.
+          wait_for_log() {
+            local pattern="$1" timeout="${2:-30}" deadline
+            deadline=$((SECONDS + timeout))
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              docker logs "$name" 2>&1 | grep -q "$pattern" && return 0
+              sleep 2
+            done
+            return 1
+          }
+
           command -v ffmpeg >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; }
           ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=15:duration=2 \
                  -c:v libx264 -pix_fmt yuv420p /tmp/hb-beyond.mkv
@@ -441,12 +456,11 @@ jobs:
           docker run -d --name "$name" -p 3101:3001 \
             -e AUTOMATED_CONVERSION_ACTIVE_HOURS="$window" "$img"
           wait_for_webui
-          docker logs "$name" 2>&1 | grep -q "active hours: ${window}" \
+          wait_for_log "active hours: ${window}" 30 \
             || fail "the active-hours setting '${window}' never appeared in the startup log"
           docker cp /tmp/hb-beyond.mkv "$name":/watch/outside-window.mkv
           docker exec "$name" chown abc:abc /watch/outside-window.mkv
-          sleep 20
-          docker logs "$name" 2>&1 | grep -q "outside the active hours window (${window})" \
+          wait_for_log "outside the active hours window (${window})" 30 \
             || fail "the daemon never logged that it was outside the active-hours window"
           docker exec "$name" sh -c 'test -e /output/outside-window.mp4' \
             && fail "a file was converted outside the configured active-hours window"
