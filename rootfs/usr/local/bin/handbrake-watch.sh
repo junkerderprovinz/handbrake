@@ -47,6 +47,34 @@ DONE_LIST="${STATE_DIR}/done.list"
 FAILED_LIST="${STATE_DIR}/failed.list"
 JOB_LOG="/config/handbrake-watch.log"
 
+# Conversion hooks. Fixed path, same as jlesage/handbrake, so a migrating user's
+# scripts land where they already expect.
+HOOKS_DIR="/config/hooks"
+
+# Staging: an in-progress conversion is written here and only moved to its final
+# destination once HandBrakeCLI succeeded. Empty means "a hidden directory under
+# the output root", which is exactly what jlesage does. Point it at a fast local
+# disk (an Unraid cache pool, say) to keep the array out of the write path while
+# a transcode runs, then let the finished file land on the array.
+STAGING_DIR="${AUTOMATED_CONVERSION_STAGING_DIR:-}"
+[ -z "${STAGING_DIR}" ] && STAGING_DIR="${OUTPUT_DIR}/.handbrake-staging"
+
+# Short, stable tag for THIS container. Two instances may share a staging
+# directory or a watch folder, so every file we create carries our own tag: on
+# restart we may only clean up our own leftovers, never another live instance's.
+INSTANCE="$(tr -cd 'a-zA-Z0-9' < /etc/hostname 2>/dev/null | head -c 12)"
+[ -z "${INSTANCE}" ] && INSTANCE="handbrake"
+
+# Hook context. Exported once so every hook sees the same variable names no
+# matter which hook it is; the values are reassigned at each call site.
+HB_INPUT=""
+HB_OUTPUT=""
+HB_STATUS=""
+HB_WATCH_DIR=""
+export HB_INPUT HB_OUTPUT HB_STATUS HB_WATCH_DIR
+export HB_PRESET="${PRESET}"
+export HB_FORMAT="${FORMAT}"
+
 DEFAULT_VIDEO_EXTENSIONS="mkv mp4 m4v avi mov wmv flv webm mpg mpeg m2ts mts ts vob 3gp ogv divx asf rm rmvb iso"
 
 # Numeric guards — a hand-edited template value must not break the loop.
@@ -83,6 +111,8 @@ read -r -a HB_EXTRA_ARGS <<< "${AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS:-}"
 # ---- shutdown handling -----------------------------------------------------
 CURRENT_PARTIAL=""
 CURRENT_PID=""
+CURRENT_LOCK=""
+LOCK_WARNED=0
 
 cleanup() {
     log "stop requested — shutting down"
@@ -95,6 +125,7 @@ cleanup() {
         rm -f -- "${CURRENT_PARTIAL}"
         log "removed the partial output ${CURRENT_PARTIAL}"
     fi
+    release_lock
     exit 0
 }
 trap cleanup TERM INT
@@ -118,10 +149,125 @@ is_video() {
     return 1
 }
 
-partial_path() {
-    # Plan 4 replaces this single helper when it adds a configurable staging
-    # directory. Everything else in the daemon keeps working unchanged.
-    printf '%s/.%s.partial' "$1" "$2"
+staging_path() {
+    # $1 = final file name (stem.ext). Replaces Plan 1's partial_path(): the
+    # in-progress file now lives in STAGING_DIR instead of next to the finished
+    # output, so a media scanner watching /output never sees it at all, and the
+    # staging directory can sit on a different (faster) disk. The instance tag
+    # keeps two containers that share a staging directory apart.
+    printf '%s/.%s.%s.partial' "${STAGING_DIR}" "${INSTANCE}" "$1"
+}
+
+finalise_output() {
+    # $1 = finished staging file, $2 = final destination.
+    #
+    # Two steps on purpose. When STAGING_DIR is on a different filesystem than
+    # the output, `mv` is a copy and is NOT atomic, so a scanner could index a
+    # half-copied file. Copying to a hidden sibling INSIDE the destination
+    # directory first makes the last step a same-filesystem rename, which is.
+    local stage="$1" dst="$2" tmp
+    tmp="$(dirname -- "${dst}")/.${INSTANCE}.$(basename -- "${dst}").moving"
+    rm -f -- "${tmp}"
+    if ! mv -f -- "${stage}" "${tmp}"; then
+        log "ERROR: could not move '${stage}' to '${tmp}' — is the output folder writable and does it have room?"
+        return 1
+    fi
+    if ! mv -f -- "${tmp}" "${dst}"; then
+        log "ERROR: could not rename '${tmp}' to '${dst}'"
+        rm -f -- "${tmp}"
+        return 1
+    fi
+    return 0
+}
+
+seed_hooks() {
+    # The .example files document the contract and are refreshed from the image
+    # on every start. A real hook the user installed is never touched.
+    mkdir -p -- "${HOOKS_DIR}" 2>/dev/null || return 0
+    local ex
+    for ex in /defaults/hooks/*.example; do
+        [ -e "${ex}" ] || continue
+        cp -f -- "${ex}" "${HOOKS_DIR}/$(basename -- "${ex}")" 2>/dev/null || true
+    done
+}
+
+run_hook() {
+    # $1 = hook file name, the rest = positional arguments for the hook.
+    # Returns the hook's exit code; returns 0 when the hook does not exist.
+    local name="$1" rc=0
+    shift
+    local hook="${HOOKS_DIR}/${name}"
+    [ -f "${hook}" ] || return 0
+    log "hook ${name}: running"
+    {
+        echo "=== $(date -Is) hook ${name} $*"
+    } >> "${JOB_LOG}"
+    # /bin/sh on purpose, shebang ignored — the same contract jlesage documents,
+    # so a hook copied over from that image behaves identically here.
+    /bin/sh "${hook}" "$@" >> "${JOB_LOG}" 2>&1 || rc=$?
+    [ "${rc}" -ne 0 ] && log "hook ${name}: exited ${rc}"
+    return "${rc}"
+}
+
+notify() {
+    # Desktop notification on the web desktop. Never fatal, never blocking, and
+    # a no-op unless WEB_NOTIFICATION is on.
+    /usr/local/bin/handbrake-notify.sh "$1" "$2" "${3:-}" 2>/dev/null || true
+}
+
+lock_path() {
+    # $1 = watch folder, $2 = source path.
+    printf '%s/.handbrake-lock-%s' "$1" "$(printf '%s' "$2" | sha1sum | cut -d' ' -f1)"
+}
+
+acquire_lock() {
+    # $1 = watch folder, $2 = source path.
+    # Returns 0 when this instance may convert the file, 1 when another instance
+    # already owns it. `mkdir` is the atomic primitive here: exactly one caller
+    # can create a given directory, which is what makes two containers sharing a
+    # watch folder safe.
+    local dir="$1" src="$2" lock
+    lock="$(lock_path "${dir}" "${src}")"
+    if mkdir -- "${lock}" 2>/dev/null; then
+        printf '%s\n%s\n' "${INSTANCE}" "$(date +%s)" > "${lock}/.owner" 2>/dev/null || true
+        CURRENT_LOCK="${lock}"
+        return 0
+    fi
+    if [ -d "${lock}" ]; then
+        return 1
+    fi
+    # mkdir failed and no lock is there: the watch folder is read-only. That is
+    # fine for a single container, so carry on unlocked and say so exactly once.
+    if [ "${LOCK_WARNED}" -eq 0 ]; then
+        log "NOTE: '${dir}' is not writable, so cross-container locking is off."
+        log "      Fine for one container. Do NOT point a second instance at this"
+        log "      folder, or both would convert the same file at the same time."
+        LOCK_WARNED=1
+    fi
+    CURRENT_LOCK=""
+    return 0
+}
+
+release_lock() {
+    [ -n "${CURRENT_LOCK}" ] || return 0
+    rm -f -- "${CURRENT_LOCK}/.owner" 2>/dev/null || true
+    rmdir -- "${CURRENT_LOCK}" 2>/dev/null || true
+    CURRENT_LOCK=""
+}
+
+clear_own_locks() {
+    # Only ever removes locks THIS container left behind after an unclean stop.
+    # Another running instance's lock is never touched.
+    local dir="$1" lock owner
+    for lock in "${dir}"/.handbrake-lock-*; do
+        [ -d "${lock}" ] || continue
+        owner="$(head -n1 -- "${lock}/.owner" 2>/dev/null || true)"
+        if [ "${owner}" = "${INSTANCE}" ]; then
+            rm -f -- "${lock}/.owner" 2>/dev/null || true
+            rmdir -- "${lock}" 2>/dev/null || true
+            log "cleared our own stale lock in ${dir}"
+        fi
+    done
 }
 
 hb_run() {
@@ -132,6 +278,17 @@ hb_run() {
     [ -n "${MUX}" ] && args+=( --format "${MUX}" )
     [ "${#HB_GPU_ARGS[@]}" -gt 0 ] && args+=( "${HB_GPU_ARGS[@]}" )
     [ "${#HB_EXTRA_ARGS[@]}" -gt 0 ] && args+=( "${HB_EXTRA_ARGS[@]}" )
+
+    # Per-file arguments from the hb_custom_args.sh hook, appended LAST so they
+    # win over both the GPU seam and AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS
+    # (HandBrakeCLI takes the last occurrence of a repeated flag).
+    local -a hook_args=()
+    local hook_out
+    if [ -f "${HOOKS_DIR}/hb_custom_args.sh" ]; then
+        hook_out="$(/bin/sh "${HOOKS_DIR}/hb_custom_args.sh" "${src}" "${PRESET}" 2>> "${JOB_LOG}")" || hook_out=""
+        [ -n "${hook_out}" ] && read -r -a hook_args <<< "${hook_out}"
+    fi
+    [ "${#hook_args[@]}" -gt 0 ] && args+=( "${hook_args[@]}" )
 
     {
         echo "=== $(date -Is) HandBrakeCLI ${args[*]}"
