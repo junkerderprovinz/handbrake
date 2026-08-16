@@ -159,7 +159,7 @@ log on the very first start.
 | `HANDBRAKE_THEME` | `dark` | `dark` or `light` — see [Dark Mode](#7-dark-mode) |
 | `APP_NICENESS` | `0` | `nice` level (0-19) for the GUI and every transcode |
 | `KEYBOARD_LAYOUT` | `us` | X keyboard layout loaded at session start |
-| `GPU_VENDOR` | `none` | `none` or `nvidia`. `nvidia` encodes watch-folder jobs on the GPU — see [Hardware Encoding](#8-hardware-encoding) |
+| `GPU_VENDOR` | `none` | `none`, `nvidia`, `intel` or `amd` — see [Hardware Encoding](#8-hardware-encoding) |
 | `CUSTOM_USER` / `PASSWORD` | empty | Set both to require a login on the WebUI; empty means no login |
 | `CUSTOM_PORT` / `CUSTOM_HTTPS_PORT` | `3000` / `3001` | Internal WebUI ports |
 
@@ -219,17 +219,34 @@ source of truth. Change it in the template and restart the container.
 
 ## 8. Hardware Encoding
 
+Set `GPU_VENDOR` and pass the device through; the watch-folder converter then
+adds `--encoder <hardware encoder>` to every job. The GUI is unaffected and
+keeps its own encoder dropdown. This is the feature the Alpine-based
+community image has never been able to ship at all: NVIDIA's userspace
+libraries are glibc binaries that musl cannot load, so its NVENC request has
+been [open since 2019](https://github.com/jlesage/docker-handbrake/issues/49).
+This image is Ubuntu-based, so the standard container runtimes just work.
+
+| `GPU_VENDOR` | What you need on the host | Works out of the box | Verified by the maintainer |
+|---|---|---|---|
+| `none` (default) | nothing | ✅ software x264/x265 | ✅ |
+| `nvidia` | `--runtime=nvidia`, the Nvidia-Driver plugin | ✅ | ✅ real hardware, RTX 4070 Ti SUPER |
+| `intel` | `/dev/dri` passthrough, `i915` or `xe` kernel driver | ❌ [known Ubuntu-packaging bug](#intel-quick-sync-qsv) | ✅ real hardware, bug found and fixed (`handbrake:gpu-full`) |
+| `amd` | `/dev/dri` passthrough, `amdgpu` kernel driver, a custom image, AMD's AMF runtime | ❌ see below | ❌ no AMD GPU here |
+
+The container never pretends. If the encoder you asked for is not usable it
+falls back to software and writes the reason into the container log, plus a
+full report to `/config/handbrake-gpu.log`.
+
+### NVIDIA NVENC
+
 `GPU_VENDOR=nvidia` encodes every watch-folder job on an NVIDIA GPU using
-HandBrake's NVENC encoder instead of the CPU. This is the feature the Alpine-based
-community image has never been able to ship: NVIDIA's userspace libraries are
-glibc binaries that musl cannot load, so its NVENC request has been
-[open since 2019](https://github.com/jlesage/docker-handbrake/issues/49). This
-image is Ubuntu-based, so the standard NVIDIA container runtime just works.
+HandBrake's NVENC encoder instead of the CPU.
 
-**Status:** NVENC is developer-verified on real hardware (NVIDIA GeForce RTX 4070
-Ti SUPER, Unraid). Intel QSV and AMD VCN are not implemented yet.
+**Status:** developer-verified on real hardware (NVIDIA GeForce RTX 4070 Ti
+SUPER, Unraid).
 
-### What the host needs
+#### What the host needs
 
 | Requirement | Value |
 |---|---|
@@ -262,7 +279,7 @@ docker run -d \
   ghcr.io/junkerderprovinz/handbrake:latest
 ```
 
-### What it changes
+#### What it changes
 
 - **Watch-folder jobs only.** `GPU_VENDOR` adds `--encoder nvenc_h264` to every
   automated conversion. In the GUI you pick the encoder yourself — the NVENC
@@ -286,25 +303,189 @@ docker run -d \
   `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS=--enable-hw-decoding nvdec` if your
   preset has no filters.
 
-### Confirming it is actually on
+The measured details for this build, including the NVENC encoders it offers on
+a working GPU and the hardware evidence behind the "developer-verified" claim,
+are in [`docs/hardware-encoding-nvidia.md`](docs/hardware-encoding-nvidia.md).
+
+### Intel Quick Sync (QSV)
+
+Requirements on the host:
+
+- The iGPU or Arc card passed into the container. Unraid: add `--device=/dev/dri`
+  to *Extra Parameters*. Plain Docker: `--device /dev/dri`.
+- The **open-source** `i915` (or `xe`) kernel driver, which every current Linux
+  kernel ships. No proprietary driver, no vendor container toolkit, nothing to
+  install on the host.
+
+```sh
+docker run -d \
+  --name=handbrake \
+  --device /dev/dri \
+  -e GPU_VENDOR=intel \
+  ... \
+  ghcr.io/junkerderprovinz/handbrake:latest
+```
+
+On the next start the log says which encoder was chosen:
+
+```
+[handbrake-gpu] Intel QSV enabled: --encoder qsv_h264 (render node /dev/dri/renderD128)
+```
+
+**Important: the default image's QSV detection is correct, but the encode
+itself currently fails.** This was measured on real Intel hardware (Intel UHD
+770), not assumed: every conversion with the stock, apt-installed
+`HandBrakeCLI` fails at the muxing step with "Application provided invalid,
+non monotonically increasing dts to muxer". This is a confirmed bug in
+Ubuntu's specific packaged build of HandBrake, independently reproduced by
+another user on the identical environment
+([HandBrake/HandBrake#7962](https://github.com/HandBrake/HandBrake/issues/7962)),
+not a bug in this container or in HandBrake itself.
+
+**The fix ships as an optional variant image.** Build `handbrake:gpu-full`
+(`Dockerfile.gpu`, `just build-gpu-full`, 30-60 minutes on 8 cores, amd64
+only, not published) — it rebuilds `HandBrakeCLI` from source with
+`--enable-qsv`, which fixes the bug completely. Verified end to end: a 180 s
+1080p30 clip encodes in 12 s with `qsv_h264` on this hardware (27 s in
+software on the same CPU), with no mux errors, and the output decodes
+cleanly. Full measured evidence is in
+[`docs/hardware-encoding-intel.md`](docs/hardware-encoding-intel.md).
+
+```sh
+docker build -f Dockerfile.gpu -t handbrake:gpu-full .
+docker run -d \
+  --name=handbrake \
+  --device /dev/dri \
+  -e GPU_VENDOR=intel \
+  ... \
+  handbrake:gpu-full
+```
+
+Notes worth knowing:
+
+- The chosen encoder is `qsv_h264`, so the output codec matches what the default
+  preset produces and stays as compatible as before. For HEVC, set
+  `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS=--encoder qsv_h265`; custom
+  arguments are appended after the automatic ones and always win.
+- Hardware *decoding* is not enabled automatically. Add
+  `--enable-hw-decoding qsv` to `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS` if
+  you want it.
+- Quality is preset-driven and the RF scale is not identical between x264 and
+  QSV, so expect a different file size at the same nominal quality.
+- Quick Sync is x86-64 only. On arm64 the variable is accepted and ignored, with
+  a log line saying so.
+- Which encoders your specific GPU generation actually supports (H.264/H.265
+  are broadly supported; AV1 needs a newer generation) is logged by HandBrake
+  itself at the start of every job — see
+  [`docs/hardware-encoding-intel.md`](docs/hardware-encoding-intel.md) section 2.
+
+### AMD VCE
+
+**Honest summary: the stock image cannot do AMD hardware encoding, and this is
+not something we can fix from inside the container.** Setting `GPU_VENDOR=amd`
+is still worth doing, because it prints the exact reason and keeps converting in
+software:
+
+```
+[handbrake-gpu] WARNING: GPU_VENDOR=amd and /dev/dri/renderD128 exists, but HandBrakeCLI offers neither vce_h264 nor vaapi_h264 here.
+```
+
+Why:
+
+- HandBrake's AMD path on Linux is **VCE through AMD's AMF framework**. Ubuntu
+  does not build HandBrake with `--enable-vce`, and upstream enables it by
+  default only for Windows builds, so the packaged `HandBrakeCLI` contains no
+  AMD encoder at all.
+- Even a rebuilt binary needs AMD's proprietary AMF runtime
+  (`libamfrt64.so.1`, from the `amf-amdgpu-pro` package on `repo.radeon.com`).
+  That library is not redistributable here, and AMD no longer ships AMF as part
+  of the Linux driver stack. The last release covers **RDNA1 and RDNA2 only**
+  (RX 5000 and RX 6000 series).
+- HandBrake 1.11 has no VA-API fallback for AMD. VA-API encoders exist in
+  upstream's development branch, so this is expected to change; when a base
+  image update brings them, this container picks them up automatically, because
+  it asks HandBrake which encoders exist instead of hardcoding names.
+
+If you have an RX 5000/6000 series card and want to try anyway:
+
+1. Install `amf-amdgpu-pro` on the host per AMD's instructions, and find the
+   library: `dpkg -L amf-amdgpu-pro | grep amfrt`.
+2. Build the variant image (amd64 only, expect 30 to 60 minutes; also fixes
+   Intel QSV, see above):
+   ```sh
+   docker build -f Dockerfile.gpu -t handbrake:gpu-full .
+   ```
+3. Run it with the runtime mounted in and the device passed through:
+   ```sh
+   docker run -d \
+     --name=handbrake \
+     --device /dev/dri \
+     -v /opt/amdgpu-pro/lib/x86_64-linux-gnu/libamfrt64.so.1:/usr/lib/x86_64-linux-gnu/libamfrt64.so.1:ro \
+     -e GPU_VENDOR=amd \
+     ... \
+     handbrake:gpu-full
+   ```
+4. Check the log for `AMD hardware encoding enabled: --encoder vce_h264`. If it
+   is not there, `/config/handbrake-gpu.log` says which piece is missing.
+
+One more caveat, because it has caught people out: on cards newer than RDNA2 the
+AMF runtime can report encoder capabilities and still encode on the CPU. If the
+transcode runs at software speed, that is what is happening; there is no fix
+available today other than waiting for HandBrake's VA-API encoders.
+
+**AMD VCE is unverified.** There is no AMD GPU here to test the actual encode
+on — see the Community Verification section below.
+
+### What the container tells you
+
+Every non-`none` `GPU_VENDOR` writes `/config/handbrake-gpu.log` on each start:
+the render nodes and their permissions, the groups the container user is in, the
+kernel driver behind each node, the encoders HandBrake really offers on your
+machine, and `vainfo` / `vpl-inspect` output.
+
+```sh
+docker exec handbrake cat /config/handbrake-gpu.log
+```
+
+That file is the first thing to read when hardware encoding does not engage, and
+the one thing to attach to a report.
+
+The container never guesses an encoder name: at start-up it asks the bundled
+`HandBrakeCLI` which encoders it can actually use on your GPU and picks from
+that list, so a driver or GPU that cannot do the requested vendor is detected
+instead of assumed.
 
 ```sh
 docker logs handbrake 2>&1 | grep '\[handbrake-gpu\]'
 docker exec handbrake cat /run/handbrake/gpu-args    # empty means software encoding
 ```
 
-A working GPU logs the encoder, the driver library and the GPU name. Anything
-else logs an `ERROR:` block naming the exact fix and falls back to software
-encoding — the container keeps converting either way, it just uses the CPU.
+### Help us verify this (please)
 
-The container never guesses an encoder name: at start-up it asks the bundled
-`HandBrakeCLI` which encoders it can actually use on your GPU and picks from
-that list, so a driver or GPU that cannot do NVENC is detected instead of
-assumed.
+**AMD VCE in this image is implemented against AMD's and HandBrake's own
+documentation. It has not been verified on real hardware by the maintainer,
+because there is no AMD GPU here to test on.** NVIDIA and Intel both have a
+card behind them now — see the table above. Every part that could be tested
+without AMD hardware has been: the runtime libraries are asserted in CI, the
+encoder selection logic is exercised in CI on GPU-less runners, and the
+fallback path is checked on both architectures.
 
-The measured details for this build, including the NVENC encoders it offers on
-a working GPU and the hardware evidence behind the "developer-verified" claim,
-are in [`docs/hardware-encoding-nvidia.md`](docs/hardware-encoding-nvidia.md).
+What is missing is somebody with actual AMD hardware saying whether a file
+comes out the other end faster — and, since Intel Quick Sync varies a lot by
+GPU generation, a confirmation on hardware other than a Gen12/Xe iGPU
+(older Gen9-11, or a discrete Arc card) is useful too.
+
+If you have an AMD Radeon, or Intel hardware other than a Gen12+ iGPU:
+
+1. Set `GPU_VENDOR=amd` (or `intel` with `handbrake:gpu-full`) and pass
+   `--device /dev/dri`.
+2. Convert one file.
+3. Open a report with the hardware report form:
+   [**Report your GPU result**](https://github.com/junkerderprovinz/handbrake/issues/new?template=hardware-report.yml)
+
+Attach `/config/handbrake-gpu.log` and say whether it worked. A report that says
+"it does not work" is just as useful as one that says it does, and the log file
+usually contains the reason.
 
 <br>
 
