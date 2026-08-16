@@ -1,0 +1,91 @@
+name: Lint
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  hadolint:
+    name: Hadolint (Dockerfile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hadolint/hadolint-action@v3.4.0
+        with:
+          dockerfile: Dockerfile
+          # DL3008 = pin apt versions — deliberately skipped, the package set
+          #          moves with the Ubuntu series of the Selkies base.
+          # DL3009 = clean apt lists — cleaned once at the end of the install
+          #          layer instead of after every RUN.
+          ignore: DL3008,DL3009
+          failure-threshold: warning
+
+  shellcheck:
+    name: ShellCheck (shipped scripts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          # Everything shipped into the image that a shell executes: *.sh, the
+          # extensionless s6-rc.d service scripts (run) and the openbox
+          # autostart. Shebangs are honored (no forced --shell); the
+          # with-contenv scripts carry a "shellcheck shell=bash" directive.
+          SCRIPTS=$(find rootfs -type f \( -name '*.sh' -o -name 'run' -o -name 'autostart' \))
+
+          if [ -z "${SCRIPTS}" ]; then
+            echo "ERROR: no shell scripts found — the find pattern is broken." >&2
+            exit 1
+          fi
+
+          echo "Checking the following scripts:"
+          echo "${SCRIPTS}"
+          echo "---"
+
+          # -S warning: fail on warnings and up
+          # -x:         follow sourced files
+          # -e SC1091:  allow sourcing files that do not exist at lint time
+          # shellcheck disable=SC2086
+          shellcheck -S warning -x -e SC1091 ${SCRIPTS}
+
+          echo "All scripts passed shellcheck."
+
+  xml-validate:
+    name: XML Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate XML files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxml2-utils
+          found=0
+          for f in $(find . -name '*.xml' -not -path './.git/*'); do
+            echo "Checking $f"
+            xmllint --noout "$f"
+            found=1
+          done
+          [ "$found" -eq 0 ] && echo "No XML files in this repo — nothing to validate."
+          exit 0
+
+  line-endings:
+    name: Line endings (rootfs must be LF)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject CR in shipped files
+        run: |
+          set -euo pipefail
+          # A CRLF checkout breaks every shebang inside the image. .gitattributes
+          # prevents it, but a file committed with `-c core.autocrlf=false` from a
+          # Windows editor could still slip through — fail loudly here.
+          if grep -rlI $'\r' rootfs .github/assets/banner-raw.txt .github/workflows 2>/dev/null; then
+            echo "::error::the files listed above contain CR characters — they must be LF only"
+            exit 1
+          fi
+          echo "No CR characters in rootfs/, the banner or the workflows."
