@@ -539,10 +539,17 @@ while true; do
                 HB_STATUS="0"
                 if truthy "${AUTOMATED_CONVERSION_KEEP_SOURCE:-1}"; then
                     printf '%s\n' "${key}" >> "${DONE_LIST}"
-                else
-                    rm -f -- "${src}"
+                elif rm -f -- "${src}" 2>/dev/null && [ ! -e "${src}" ]; then
                     log "removed source '${src}' (AUTOMATED_CONVERSION_KEEP_SOURCE=0)"
                     unset "SEEN_KEY[${src}]" "SEEN_AT[${src}]"
+                else
+                    # KEEP_SOURCE=0 relies on the file's ABSENCE to avoid
+                    # reprocessing it; a silently failed rm (e.g. the watch
+                    # folder's permissions do not allow deletion) would
+                    # otherwise re-convert this file on every future pass.
+                    log "WARNING: could not remove source '${src}' — check the watch folder's permissions."
+                    log "         Recording it as done instead so it is not converted again."
+                    printf '%s\n' "${key}" >> "${DONE_LIST}"
                 fi
             else
                 rm -f -- "${CURRENT_PARTIAL}"
