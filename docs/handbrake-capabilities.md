@@ -185,3 +185,86 @@ Dockerfile fails the build if that preset disappears from the catalogue.
 `libadwaita` does not appear in `ldd /usr/bin/ghb` output. HandBrake's GUI is
 GTK4 without libadwaita, so the dark theme is applied through
 `GTK_THEME=Adwaita:dark` (see `rootfs/usr/local/bin/handbrake-theme.sh`).
+
+## Hardware encoder support in this packaging
+
+Recorded on `2026-08-16` from `handbrake:pre-gpu`, built at commit
+`b8f9ea4`. Regenerate after every base-image or HandBrake version bump.
+
+### Why the encoder list above contains no hardware encoders
+
+`libhb` only lists a hardware encoder when it is **compiled in AND usable on the
+machine right now** (`libhb/common.c`, `hb_video_encoder_is_enabled()` calls
+`hb_qsv_video_encoder_is_available()` / `hb_vce_h264_available()` /
+`hb_nvenc_h264_available()`). The dump in
+`/usr/local/share/handbrake-cli-help.txt` is recorded during `docker build` on a
+machine with no GPU, so it can never contain one.
+
+**Do not use that dump to decide whether a hardware encoder exists.** Ask the
+live binary inside a running container instead — which is exactly what
+`rootfs/usr/local/bin/handbrake-gpu.sh` does.
+
+Live encoder list on a GPU-less machine:
+
+```text
+svt_av1
+svt_av1_10bit
+ffv1
+x264
+x264_10bit
+x265
+x265_10bit
+x265_12bit
+mpeg4
+mpeg2
+VP8
+VP9
+VP9_10bit
+dnxhr
+dnxhr_10bit
+ff_prores
+theora
+```
+
+### Intel QSV: compiled in on amd64
+
+Ubuntu builds `handbrake-cli` with `--enable-qsv` on amd64 and links it against
+the system oneVPL dispatcher, so the package already depends on it:
+
+```text
+libva-drm2 (>= 1.1.0)
+libva2 (>= 1.6.0~pre1)
+libvpl2 (>= 1:2.16.0)
+```
+
+Proof in the binary itself (needs no Intel hardware):
+
+```text
+NEEDED               libvpl.so.2
+```
+
+(`grep -c -a -F "libvpl.so.2" /usr/bin/HandBrakeCLI` also returns `1`, the
+fallback used when `objdump` is unavailable.)
+
+Missing from a stock image, and added by this repo's Dockerfile on amd64:
+`libmfx-gen1.2` (oneVPL GPU runtime) and `intel-media-va-driver-non-free` (iHD
+VA-API driver). Neither is a package dependency because both are hardware
+specific.
+
+### AMD VCE: not compiled in
+
+```text
+0
+```
+
+`0` occurrences of the AMF runtime name means the binary contains no AMD VCE
+code path at all. Debian/Ubuntu do not pass `--enable-vce` (confirmed against
+the real `debian/rules`: it passes `enable-nvenc`, `enable-qsv` and
+`enable-x265`, never `enable-vce`); upstream's own default enables it only for
+Windows hosts. HandBrake 1.11 also has no VA-API encoder fallback (the 1.11.x
+encoder table has `qsv_*`, `vce_*` and `nvenc_*` and no `vaapi_*`; VA-API
+exists only on `master` so far).
+
+Getting AMD hardware encoding therefore needs **both** a source rebuild with
+`--enable-vce` **and** AMD's proprietary `libamfrt64.so.1` runtime at run time.
+See `Dockerfile.vce` and the README's Hardware Encoding section.
