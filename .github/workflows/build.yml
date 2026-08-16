@@ -1,0 +1,347 @@
+name: Build & Push
+
+# -----------------------------------------------------------------------------
+# Builds the HandBrake-on-Selkies image and pushes it to:
+#   * GitHub Container Registry  (ghcr.io/junkerderprovinz/handbrake)
+#   * Docker Hub                 (docker.io/<DOCKERHUB_USERNAME>/handbrake)
+#     — active only once the DOCKERHUB_USERNAME variable and DOCKERHUB_TOKEN
+#       secret are set together; until then the build stays GHCR-only.
+#
+# Architecture: one NATIVE build job per platform (amd64 on ubuntu-latest,
+# arm64 on ubuntu-24.04-arm — free for public repos). Each job boots its image
+# and runs the full smoke gate, including a REAL transcode, then pushes by
+# digest; a merge job assembles the multi-arch manifest under the final tags.
+# Native beats QEMU here because the gate actually encodes video: a HandBrake
+# run under arm64 emulation would take minutes and time the gate out.
+#
+# Triggers:
+#   * Push to main           -> tags: latest, sha-<short>
+#   * Tag v*.*.*             -> tags: latest, <version>, <major>, <major>.<minor>
+#   * Weekly cron (Sun 04 UTC) — picks up upstream Selkies base updates
+#   * Manual workflow_dispatch
+# -----------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*.*.*' ]
+  schedule:
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: handbrake
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+
+      - name: Build ${{ matrix.arch }} image for the smoke gate
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
+          tags: handbrake:smoke-${{ matrix.arch }}
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+          cache-from: type=gha,scope=build-${{ matrix.arch }}
+
+      # ---------------------------------------------------------------------
+      # SMOKE GATE. A green docker build only proves the image BUILDS. This
+      # proves it boots, serves the WebUI, keeps HandBrake's GUI alive, applies
+      # the dark theme, and actually transcodes a video end to end.
+      # ---------------------------------------------------------------------
+      - name: Smoke test — ${{ matrix.arch }} must boot, stay up and transcode
+        run: |
+          set -euo pipefail
+          img=handbrake:smoke-${{ matrix.arch }}
+          name=hb-smoke
+
+          fail() {
+            echo "::error::$1"
+            echo "---- container log ----"
+            docker logs "$name" 2>&1 | tail -n 120 || true
+            echo "---- GUI log ----"
+            docker exec "$name" cat /config/handbrake-gui.log 2>/dev/null | tail -n 60 || true
+            echo "---- watch job log ----"
+            docker exec "$name" cat /config/handbrake-watch.log 2>/dev/null | tail -n 60 || true
+            docker rm -f "$name" >/dev/null 2>&1 || true
+            exit 1
+          }
+
+          echo "== static asserts =="
+          docker run --rm --entrypoint sh "$img" -c 'test -x /usr/bin/ghb' \
+            || { echo "::error::/usr/bin/ghb missing from the image"; exit 1; }
+          docker run --rm --entrypoint sh "$img" -c 'HandBrakeCLI --version' \
+            || { echo "::error::HandBrakeCLI does not run"; exit 1; }
+
+          echo "== boot =="
+          docker run -d --name "$name" -p 3000:3000 -p 3001:3001 "$img"
+
+          up() {
+            local c
+            c=$(curl -k -o /dev/null -s -w '%{http_code}' --max-time 5 https://localhost:3001/ || true)
+            { [ -n "$c" ] && [ "$c" != "000" ]; } && return 0
+            c=$(curl -o /dev/null -s -w '%{http_code}' --max-time 5 http://localhost:3000/ || true)
+            { [ -n "$c" ] && [ "$c" != "000" ]; } && return 0
+            return 1
+          }
+
+          # Real 180s wall-clock deadline (each probe can spend ~10s in curl
+          # timeouts, so an iteration counter would overshoot badly).
+          deadline=$((SECONDS + 180))
+          webui=0
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            if up; then echo "WebUI responded after ${SECONDS}s"; webui=1; break; fi
+            if [ -z "$(docker ps -q --filter "name=$name")" ]; then fail "container exited early"; fi
+            sleep 1
+          done
+          [ "$webui" -eq 1 ] || fail "WebUI did not respond within 180s"
+
+          echo "== dark theme =="
+          theme=$(docker exec "$name" cat /run/s6/container_environment/GTK_THEME 2>/dev/null || echo "")
+          echo "GTK_THEME=${theme}"
+          [ "$theme" = "Adwaita:dark" ] || fail "GTK_THEME is '${theme}', expected 'Adwaita:dark' (dark must be the default)"
+
+          echo "== HandBrake GUI is up and STAYS up =="
+          pid1=""
+          deadline=$((SECONDS + 120))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            pid1=$(docker exec "$name" pgrep -x ghb 2>/dev/null | head -n1 || true)
+            [ -n "$pid1" ] && break
+            sleep 2
+          done
+          [ -n "$pid1" ] || fail "the ghb GUI process never started"
+          echo "ghb pid ${pid1}; holding 20s to prove it is not crash-looping"
+          sleep 20
+          pid2=$(docker exec "$name" pgrep -x ghb 2>/dev/null | head -n1 || true)
+          [ -n "$pid2" ] || fail "the ghb GUI process died within 20s"
+          [ "$pid1" = "$pid2" ] || fail "ghb restarted within 20s (pid ${pid1} -> ${pid2}) — crash loop"
+          echo "ghb stayed up with an unchanged pid"
+
+          echo "== watch daemon is up =="
+          docker exec "$name" pgrep -f handbrake-watch.sh >/dev/null 2>&1 \
+            || fail "the watch-folder daemon is not running"
+
+          echo "== READY banner printed =="
+          docker logs "$name" 2>&1 | grep -q 'HANDBRAKE IS READY' \
+            || fail "the READY banner never printed"
+
+          echo "== end-to-end transcode =="
+          command -v ffmpeg >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; }
+          ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=15:duration=2 \
+                 -f lavfi -i sine=frequency=440:duration=2 \
+                 -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest /tmp/hb-smoke.mkv
+          docker cp /tmp/hb-smoke.mkv "$name":/watch/hb-smoke.mkv
+          docker exec "$name" chown abc:abc /watch/hb-smoke.mkv
+          converted=0
+          deadline=$((SECONDS + 240))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            if docker exec "$name" test -s /output/hb-smoke.mp4 2>/dev/null; then converted=1; break; fi
+            sleep 2
+          done
+          [ "$converted" -eq 1 ] || fail "the watch folder never produced /output/hb-smoke.mp4 within 240s"
+          size=$(docker exec "$name" stat -c %s /output/hb-smoke.mp4)
+          echo "converted file is ${size} bytes"
+          [ "$size" -gt 1000 ] || fail "/output/hb-smoke.mp4 is suspiciously small (${size} bytes)"
+          docker exec "$name" sh -c 'ls -a /output | grep -q "\.partial$"' \
+            && fail "a .partial staging file was left behind in /output"
+
+          echo "✅ smoke gate passed on ${{ matrix.arch }}"
+          docker rm -f "$name" >/dev/null
+
+      # CVE scan of the locally-loaded smoke image. Report-only: exit-code 0 so
+      # a HIGH/CRITICAL finding never blocks the build — results land in the
+      # repo's Security tab. ignore-unfixed hides CVEs with no upstream fix.
+      - name: Scan image for CVEs (Trivy)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: handbrake:smoke-${{ matrix.arch }}
+          format: sarif
+          output: trivy-results-${{ matrix.arch }}.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"     # MUST stay 0 — report only, never fail the build
+
+      - name: Upload Trivy results to the Security tab
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results-${{ matrix.arch }}.sarif
+          category: trivy-${{ matrix.arch }}
+
+      - name: Push ${{ matrix.arch }} by digest
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=build-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=build-${{ matrix.arch }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: ${{ vars.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+            name=docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }},enable=${{ vars.DOCKERHUB_USERNAME != '' }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=schedule,pattern=weekly
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - name: Create multi-arch manifests
+        working-directory: /tmp/digests
+        # tags come from the DOCKER_METADATA_OUTPUT_TAGS env the metadata action
+        # exports — no ${{ }} interpolation inside the script (injection hygiene)
+        run: |
+          set -euo pipefail
+          src="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}"
+          sources=""
+          for d in *; do sources="$sources ${src}@sha256:${d}"; done
+          echo "sources:${sources}"
+          tagargs=""
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && tagargs="$tagargs -t $tag"
+          done <<< "$DOCKER_METADATA_OUTPUT_TAGS"
+          echo "tags:${tagargs}"
+          # Cross-registry copy (GHCR -> Docker Hub) can hit a transient HTTP/2
+          # PROTOCOL_ERROR on large layers; retry a few times before failing.
+          n=0
+          until docker buildx imagetools create ${tagargs} ${sources}; do
+            n=$((n + 1))
+            if [ "$n" -ge 4 ]; then echo "imagetools create failed after $n attempts"; exit 1; fi
+            echo "imagetools create failed (attempt $n); retrying in $((n * 15))s..."
+            sleep $((n * 15))
+          done
+
+      - name: Inspect
+        run: |
+          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+
+      # Mirror the GitHub README to the Docker Hub repo description. Editing the
+      # description needs a credential the push token lacks (it returns 403), so
+      # this uses a separate DOCKERHUB_PASSWORD secret. Skipped until that
+      # secret is set, so a missing credential never fails the build.
+      - name: Checkout (README for the Docker Hub sync)
+        if: ${{ vars.DOCKERHUB_USERNAME != '' && github.event_name != 'pull_request' }}
+        uses: actions/checkout@v7
+
+      - name: Docker Hub description sync ready?
+        id: dhdesc
+        if: ${{ vars.DOCKERHUB_USERNAME != '' && github.event_name != 'pull_request' }}
+        env:
+          PW: ${{ secrets.DOCKERHUB_PASSWORD }}
+        run: |
+          if [ -n "$PW" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "DOCKERHUB_PASSWORD not set — skipping the Docker Hub description sync"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync README to Docker Hub
+        if: ${{ steps.dhdesc.outputs.go == 'true' }}
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          repository: ${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          short-description: "HandBrake video transcoder for Unraid, in your browser via Selkies, dark by default."
+          enable-url-completion: true
