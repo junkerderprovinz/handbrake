@@ -26,9 +26,15 @@
 #   and no encoder id is ever hardcoded into an argument.
 #
 #   Do NOT use the build-time dump /usr/local/share/handbrake-cli-help.txt for
-#   this. It is recorded during `docker build` on a machine with no GPU, so it
-#   never contains a single hardware encoder and the lookup would fail even on a
-#   working GPU. See docs/hardware-encoding-nvidia.md section 1.
+#   this, or for any other hardware-capability question. It is recorded during
+#   `docker build` on a machine with no GPU, so it never contains a single
+#   hardware encoder and the lookup would fail even on a working GPU. Its
+#   static option-syntax text (e.g. "--enable-hw-decoding") also cannot be
+#   trusted for whether a feature was actually compiled in: measured on real
+#   NVENC hardware, the dump still names 'nvdec' as a valid
+#   --enable-hw-decoding value while HandBrakeCLI's own runtime diagnostic
+#   says nvdec is not compiled into this build at all. See
+#   docs/hardware-encoding-nvidia.md sections 1 and 3.
 #
 # EXTENSION POINT — this is the ONLY place a GPU plan needs to touch:
 #   * add the vendor's branch to gpu_args_for_vendor()
@@ -39,12 +45,6 @@
 set -eu
 
 log() { echo "[handbrake-gpu] $*" >&2; }
-
-# Build-time dump of `HandBrakeCLI --help` (written by the Dockerfile). Valid
-# ONLY for help text that libhb prints unconditionally, such as the
-# --enable-hw-decoding entry. It is NOT valid for the encoder list — see the
-# header comment above and hb_load_encoders() below.
-HB_CLI_HELP="/usr/local/share/handbrake-cli-help.txt"
 
 # NVENC encoder preference order. H.264 comes FIRST on purpose: the default
 # preset (General/Very Fast 1080p30) is an x264 preset, so nvenc_h264 keeps the
@@ -117,18 +117,24 @@ hb_pick_encoder() {
     return 1
 }
 
-hb_help_lists_nvdec() {
-    # True when this build advertises --enable-hw-decoding with nvdec.
+hb_nvdec_compiled_in() {
+    # True when THIS build's libhb actually has NVDEC compiled in.
     #
-    # This one reads the build-time dump ON PURPOSE, and that is correct here:
-    # the --enable-hw-decoding help text is a static literal in ShowHelp(),
-    # guarded only by a compile-time #if and never by a hardware probe, so the
-    # dump and a live --help print it identically. Decode capability and the
-    # hardware ENCODER list are different things in HandBrake's help output.
-    # Do not "consistency-fix" this onto hb_has_encoder.
-    [ -r "${HB_CLI_HELP}" ] || return 1
-    grep -A3 -- '--enable-hw-decoding' "${HB_CLI_HELP}" 2>/dev/null \
-        | grep -qi 'nvdec'
+    # NOT a build-time-dump check, despite the --enable-hw-decoding help entry
+    # being a static string that always names 'nvdec' as a valid value: that
+    # text describes the OPTION's syntax, not whether the feature was compiled
+    # in, and measuring it on real hardware proved it wrong — HandBrakeCLI
+    # printed "nvdec: is not compiled into this build" on its own diagnostic
+    # line while --help still listed nvdec as an --enable-hw-decoding value.
+    # See docs/hardware-encoding-nvidia.md section 3 for the measured proof.
+    #
+    # HandBrakeCLI prints this diagnostic to stderr on every invocation once an
+    # NVIDIA device is present (before this function ever runs, probes 1 and 2
+    # already confirmed that), so a cheap --version call is a real, live probe:
+    # "nvdec: version N is available" vs "nvdec: is not compiled into this
+    # build". This is the same "ask the running binary" philosophy as the
+    # encoder check, applied to decode instead of encode.
+    HandBrakeCLI --version 2>&1 | grep -q 'nvdec: version'
 }
 
 nvidia_device_present() {
@@ -271,7 +277,7 @@ gpu_args_for_vendor() {
                 log "      encoder of AUTOMATED_CONVERSION_PRESET. Put '--encoder <id>' into"
                 log "      AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS to pick a different one."
             fi
-            if lib_decode="$(nvidia_lib_path libnvcuvid.so.1)" && hb_help_lists_nvdec; then
+            if lib_decode="$(nvidia_lib_path libnvcuvid.so.1)" && hb_nvdec_compiled_in; then
                 log "NVDEC is available (${lib_decode}) but stays OFF: HandBrake disables hardware decoding"
                 log "      as soon as any filter runs, which every stock preset does. Add"
                 log "      '--enable-hw-decoding nvdec' to AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS to force it."
