@@ -542,7 +542,9 @@ Two behaviours worth knowing:
   otherwise ignored.
 - `hb_custom_args.sh` output is appended **after**
   `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS`, so where both set the same flag
-  the hook wins.
+  the hook wins. This is also how to pick a quality setting per file, e.g.
+  inspecting the source's resolution with `ffprobe` and printing
+  `--quality 22` for 1080p versus `--quality 20` for 4K.
 
 Everything a hook prints goes to `/config/handbrake-watch.log`.
 
