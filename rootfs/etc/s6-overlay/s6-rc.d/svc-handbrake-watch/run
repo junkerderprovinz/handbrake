@@ -1,0 +1,14 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# Longrun: the automated watch-folder conversion daemon.
+#
+# Runs as abc (the PUID/PGID-remapped runtime user) so every converted file is
+# created with the right ownership and the container UMASK — no post-hoc chown.
+# s6-setuidgid only changes uid/gid, NOT the environment, so HOME and the XDG
+# paths are set explicitly; HandBrakeCLI otherwise writes its state next to a
+# root-owned HOME it cannot use.
+exec s6-setuidgid abc \
+    env HOME=/config \
+        XDG_CONFIG_HOME=/config/.config \
+        XDG_CACHE_HOME=/config/.cache \
+    /usr/local/bin/handbrake-watch.sh
