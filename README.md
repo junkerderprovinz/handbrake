@@ -90,6 +90,8 @@ What you get beyond bare HandBrake:
 | Web stack | **Selkies (WebRTC/H.264)** | noVNC |
 | Base | Ubuntu (glibc) | Alpine (musl) |
 | NVIDIA NVENC encoding | ✅ | ❌ ([open since 2019](https://github.com/jlesage/docker-handbrake/issues/49)) |
+| Intel Quick Sync (QSV) encoding | ✅ verified | ⚠️ frequently broken ([#459](https://github.com/jlesage/docker-handbrake/issues/459), [#430](https://github.com/jlesage/docker-handbrake/issues/430), [#382](https://github.com/jlesage/docker-handbrake/issues/382), more) |
+| AMD VCE encoding | wired, unverified (no AMD GPU to test on) | ❌ ([open request](https://github.com/jlesage/docker-handbrake/issues/441)) |
 | Dark mode default | ✅ | opt-in via `DARK_MODE=1` |
 | Watch-folder conversion | ✅ | ✅ |
 | Browser clipboard | ✅ | ⚠️ |
@@ -307,7 +309,10 @@ docker run -d \
   `nvenc_h264` keeps the delivered codec identical and only swaps the encoder.
   For HEVC, set
   `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS=--encoder nvenc_h265` — custom args
-  are appended last, so they win.
+  are appended last, so they win. `nvenc_av1` and `nvenc_av1_10bit` are compiled
+  in too (confirmed in `docs/hardware-encoding-nvidia.md`); the watch-folder seam
+  does not pick AV1 automatically since not every player supports it yet, but
+  `--encoder nvenc_av1` works the same way.
 - **A HandBrake hardware preset is left alone.** If
   `AUTOMATED_CONVERSION_PRESET` already names an NVENC preset, the container does
   not override its encoder.
