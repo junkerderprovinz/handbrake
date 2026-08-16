@@ -294,6 +294,14 @@ ENV AUTOMATED_CONVERSION=1 \
 # the array out of the write path during a transcode.
 ENV AUTOMATED_CONVERSION_STAGING_DIR=
 
+# Space-separated directory basenames pruned from every watch-folder scan
+# (matched anywhere in the tree, e.g. sync-client metadata folders).
+ENV AUTOMATED_CONVERSION_IGNORE_DIRECTORIES=
+
+# Restrict conversion to a daily window, "HH-HH" in 24h clock, e.g. 22-06 for
+# overnight only. Empty (the default) means always active.
+ENV AUTOMATED_CONVERSION_ACTIVE_HOURS=
+
 # ---------------------------------------------------------------------------
 # Web-surface parity with jlesage/docker-handbrake
 # ---------------------------------------------------------------------------
