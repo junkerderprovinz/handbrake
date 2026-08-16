@@ -16,6 +16,13 @@ build:
 smoke: build
     docker run --rm -it --name hb-smoke -p 3000:3000 -p 3001:3001 handbrake:smoke-amd64
 
+# Build the OPTIONAL full-GPU variant (source-built QSV fix + AMD VCE) against
+# the local image. Long build (30-60 min), amd64 only, never published. See
+# Dockerfile.gpu.
+build-gpu-full: build
+    docker build -f Dockerfile.gpu -t handbrake:gpu-full \
+      --build-arg BASE_IMAGE=handbrake:smoke-amd64 .
+
 # End-to-end watch-folder test against a running `just smoke` container
 convert-test:
     ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=15:duration=2 -c:v libx264 -pix_fmt yuv420p /tmp/hb-smoke.mkv

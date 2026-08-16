@@ -11,6 +11,10 @@ rootfs/** text eol=lf
 # Workflows are parsed by GitHub's YAML reader and by shellcheck in CI.
 .github/workflows/*.yml text eol=lf
 
+# Dockerfiles carry multi-line RUN blocks; a CRLF checkout breaks the shell
+# inside them.
+Dockerfile* text eol=lf
+
 # Binary assets: never touched by line-ending normalisation.
 *.png binary
 *.jpg binary

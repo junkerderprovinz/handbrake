@@ -1,0 +1,165 @@
+# syntax=docker/dockerfile:1.26
+#
+# OPTIONAL FULL-GPU VARIANT — build it yourself, it is not published.
+# -----------------------------------------------------------------------
+# Why this file exists at all:
+#
+#   1. Intel QSV: Ubuntu's handbrake-cli package DETECTS qsv_h264/qsv_h265
+#      correctly (it is compiled in — see docs/handbrake-capabilities.md), but
+#      every real encode with it fails at the muxer with "Application provided
+#      invalid, non monotonically increasing dts to muxer" /
+#      "av_interleaved_write_frame failed with error 'Invalid argument'".
+#      Measured on real Intel Quick Sync hardware (see
+#      docs/hardware-encoding-intel.md). This is a confirmed, reproducible bug
+#      in Ubuntu's specific packaged build, not in HandBrake itself or in this
+#      container: HandBrake/HandBrake#7962 documents another user hitting the
+#      IDENTICAL failure on the IDENTICAL environment (Ubuntu 26.04 "resolute",
+#      handbrake-cli 1.11.0 from the Ubuntu universe package), and confirms
+#      that building the SAME source tag from scratch with --enable-qsv fixes
+#      it completely — QSV then encodes cleanly, roughly 3x faster than CPU.
+#
+#   2. AMD VCE: Ubuntu does not build HandBrake with --enable-vce at all
+#      (upstream enables it only for Windows hosts by default), so the stock
+#      image has no AMD hardware encoder path whatsoever.
+#
+#   Both are the same fix: rebuild ONLY HandBrakeCLI from source with the
+#   flags Ubuntu's package does not (correctly) ship, and drop it over the
+#   stock binary. The GTK GUI is untouched and stays on the apt-installed
+#   binary; the GPU seam only ever feeds HandBrakeCLI, so that is exactly the
+#   surface the watch-folder converter uses. NVENC needs no fix here — it
+#   already works correctly from the apt package (see
+#   docs/hardware-encoding-nvidia.md) — but is enabled in this build anyway
+#   since it costs nothing extra and keeps this binary's capabilities a
+#   strict superset of the stock one.
+#
+# What this variant still does NOT give you:
+#   AMD's AMF runtime (libamfrt64.so.1) is proprietary, is not in Ubuntu, and
+#   is not ours to redistribute. Install amf-amdgpu-pro on the host and
+#   bind-mount the library in, see the README. The last release of that
+#   package supports RDNA1 and RDNA2 only. On RDNA3/RDNA4 this variant will
+#   not help you with VCE (QSV and NVENC are unaffected by that limitation).
+#
+# Cost: a full HandBrake contrib build, 30-60 minutes on 8 cores, amd64 only.
+#
+#   docker build -f Dockerfile.gpu -t handbrake:gpu-full .
+#
+ARG BASE_IMAGE=ghcr.io/junkerderprovinz/handbrake:latest
+ARG HANDBRAKE_TAG=1.11.2
+
+# The builder is the SAME base image as the runtime stage, so glibc and every
+# system library the new binary links against are identical by construction.
+# It also already has the QSV runtime packages installed (Dockerfile), which
+# is what makes the QSV proof step below possible without extra apt work.
+FROM ${BASE_IMAGE} AS builder
+ARG HANDBRAKE_TAG
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN set -eux; \
+    [ "$(dpkg --print-architecture)" = "amd64" ] \
+        || { echo "ERROR: this variant is amd64 only (QSV and AMF are both x86-64 only)"; exit 1; }
+
+# HandBrake's own documented Ubuntu build dependencies, plus libva-dev and
+# libvpl-dev for --enable-qsv (the same two packages Ubuntu's own
+# debian/control lists as amd64 build-depends for handbrake-cli).
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        autoconf automake build-essential cmake git libass-dev libbz2-dev \
+        libfontconfig-dev libfreetype-dev libfribidi-dev libharfbuzz-dev \
+        libjansson-dev liblzma-dev libmp3lame-dev libnuma-dev libogg-dev \
+        libopus-dev libsamplerate0-dev libspeex-dev libtheora-dev libtool \
+        libtool-bin libturbojpeg0-dev libvorbis-dev libx264-dev libxml2-dev \
+        libvpx-dev m4 make meson nasm ninja-build patch pkg-config tar \
+        zlib1g-dev curl libssl-dev clang python3 \
+        libva-dev libvpl-dev
+
+RUN set -eux; \
+    git clone --depth 1 --branch "${HANDBRAKE_TAG}" \
+        https://github.com/HandBrake/HandBrake.git /src
+
+WORKDIR /src
+
+# --disable-gtk        : CLI only. Building the GTK4 GUI here would double the
+#                        build time for a binary this variant does not replace.
+# --enable-qsv         : the fix for the muxing bug described above. Same
+#                        source tag as the community-confirmed working build.
+# --enable-vce         : downloads the MIT-licensed AMF HEADERS
+#                        (AMF-headers-v1.5.0.tar.gz, sha256 verified by
+#                        contrib/amf/module.defs) and builds HandBrake's
+#                        bundled FFmpeg with --enable-amf plus the
+#                        h264_amf/hevc_amf/av1_amf encoders. No proprietary
+#                        binary is fetched or shipped.
+# --enable-nvenc       : already works from the apt package; included so this
+#                        binary's capabilities are a strict superset of it.
+RUN set -eux; \
+    ./configure --launch-jobs="$(nproc)" --launch --disable-gtk \
+        --enable-qsv --enable-vce --enable-nvenc; \
+    test -x /src/build/HandBrakeCLI
+
+# Prove both hardware-only code paths are compiled in WITHOUT owning either
+# GPU. QSV: the built CLI must list qsv_h264 among its ENCODER STRINGS (the
+# identifiers are compiled-in literals regardless of the hardware probe — see
+# docs/hardware-encoding-intel.md section 1 for why --help itself cannot be
+# used for this on a GPU-less builder). VCE: the AMF component id libhb passes
+# to check_component_available() is a wide-char literal that only lands in the
+# binary when HB_PROJECT_FEATURE_VCE was on (libhb/vce_common.c); wchar_t is
+# 4 bytes on Linux, hence `strings -e L`.
+RUN set -eux; \
+    strings -a /src/build/HandBrakeCLI | grep -qx 'qsv_h264' \
+        || { echo "ERROR: the built HandBrakeCLI contains no qsv_h264 identifier"; exit 1; }; \
+    strings -e L /src/build/HandBrakeCLI | grep -qx 'AMFVideoEncoderVCE_AVC' \
+        || { echo "ERROR: the built HandBrakeCLI contains no AMF/VCE code path"; exit 1; }; \
+    echo "handbrake-gpu-full: qsv_h264 and AMF/VCE code paths confirmed in the binary"
+
+# Work out exactly which runtime packages the new binary needs, instead of
+# guessing a package list. Builder and runtime share a base, so the mapping is
+# valid in the final stage.
+RUN set -eux; \
+    ldd /src/build/HandBrakeCLI | awk '/=> \//{print $3}' | sort -u \
+      | xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | sort -u > /src/runtime-deps.txt; \
+    echo "handbrake-gpu-full: runtime packages ->"; cat /src/runtime-deps.txt
+
+# ---------------------------------------------------------------------------
+# Runtime stage: the stock image plus one binary. Nothing from the builder's
+# 2+ GB of toolchain and sources is carried over.
+# ---------------------------------------------------------------------------
+FROM ${BASE_IMAGE}
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+COPY --from=builder /src/build/HandBrakeCLI /usr/local/bin/HandBrakeCLI
+COPY --from=builder /src/runtime-deps.txt   /tmp/runtime-deps.txt
+
+# mesa-va-drivers is the radeonsi VA-API driver. It is NOT in the stock image
+# (which would pay for it on every pull for no gain), but here it is what makes
+# the vainfo section of /config/handbrake-gpu.log say anything useful on an AMD
+# box, and it is the prerequisite for HandBrake's upcoming VA-API encoders.
+#
+# xargs -a feeds the computed package list as extra arguments, which keeps the
+# unquoted $(...) that shellcheck/hadolint would reject out of the RUN line.
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive xargs -a /tmp/runtime-deps.txt \
+        apt-get install -y --no-install-recommends mesa-va-drivers vainfo; \
+    rm -f /tmp/runtime-deps.txt; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# /usr/local/bin precedes /usr/bin on PATH, so the watch daemon's bare
+# "HandBrakeCLI" resolves to this build. Fail loudly if that ever stops being
+# true, and re-record the capability dumps from the NEW binary so every
+# consumer of them describes this image and not the stock one.
+RUN set -eux; \
+    [ "$(command -v HandBrakeCLI)" = "/usr/local/bin/HandBrakeCLI" ] \
+        || { echo "ERROR: $(command -v HandBrakeCLI) shadows the gpu-full build"; exit 1; }; \
+    if ldd /usr/local/bin/HandBrakeCLI | grep 'not found'; then \
+        echo "ERROR: the gpu-full build is missing shared libraries (listed above)"; exit 1; \
+    fi; \
+    HandBrakeCLI --version     > /usr/local/share/handbrake-version.txt 2>&1; \
+    HandBrakeCLI --help        > /usr/local/share/handbrake-cli-help.txt 2>&1; \
+    HandBrakeCLI --preset-list > /usr/local/share/handbrake-preset-list.txt 2>&1; \
+    grep -q 'Very Fast 1080p30' /usr/local/share/handbrake-preset-list.txt \
+        || { echo "ERROR: the default AUTOMATED_CONVERSION_PRESET is missing from this build"; exit 1; }; \
+    echo "handbrake-gpu-full: $(head -n 1 /usr/local/share/handbrake-version.txt)"
+
+LABEL org.opencontainers.image.title="handbrake-gpu-full"
+LABEL org.opencontainers.image.description="HandBrake for Unraid with a source-built HandBrakeCLI (--enable-qsv --enable-vce --enable-nvenc), fixing the Ubuntu package's QSV muxing bug and adding AMD VCE via AMF. AMD VCE needs AMD's proprietary AMF runtime mounted in from the host."
