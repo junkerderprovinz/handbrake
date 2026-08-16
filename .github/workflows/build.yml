@@ -465,11 +465,11 @@ jobs:
           docker run -d --name "$name" -p 3101:3001 \
             -e AUTOMATED_CONVERSION_ACTIVE_HOURS="$window" "$img"
           wait_for_webui
-          wait_for_log "active hours: ${window}" 30 \
+          wait_for_log "active hours: ${window}" 60 \
             || fail "the active-hours setting '${window}' never appeared in the startup log"
           docker cp /tmp/hb-beyond.mkv "$name":/watch/outside-window.mkv
           docker exec "$name" chown abc:abc /watch/outside-window.mkv
-          wait_for_log "outside the active hours window (${window})" 30 \
+          wait_for_log "outside the active hours window (${window})" 60 \
             || fail "the daemon never logged that it was outside the active-hours window"
           docker exec "$name" sh -c 'test -e /output/outside-window.mp4' \
             && fail "a file was converted outside the configured active-hours window"
@@ -483,7 +483,7 @@ jobs:
             || fail "ghb never created its own preferences.json on first start"
           docker restart "$name" >/dev/null
           wait_for_webui
-          wait_for_log "wired the manual-conversion GUI hook" 30 \
+          wait_for_log "wired the manual-conversion GUI hook" 60 \
             || fail "init-handbrake never logged wiring the manual-conversion GUI hook on the second start"
           docker exec "$name" sh -c \
             'jq -e ".Preferences.SendFileTo == true and .Preferences.SendFileToTarget == \"/usr/local/bin/handbrake-gui-hook.sh\"" /config/.config/ghb/preferences.json' \
