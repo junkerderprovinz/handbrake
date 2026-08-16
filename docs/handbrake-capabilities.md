@@ -267,4 +267,77 @@ exists only on `master` so far).
 
 Getting AMD hardware encoding therefore needs **both** a source rebuild with
 `--enable-vce` **and** AMD's proprietary `libamfrt64.so.1` runtime at run time.
-See `Dockerfile.vce` and the README's Hardware Encoding section.
+See `Dockerfile.gpu` and the README's Hardware Encoding section.
+
+### Optional full-GPU build variant (`Dockerfile.gpu`)
+
+Recorded on `2026-08-16` from `handbrake:gpu-full`, built at commit `7c3b030`
+with `docker build -f Dockerfile.gpu`. Not published; users build it
+themselves (`just build-gpu-full`).
+
+**This variant exists for two independent reasons, not one.** AMD VCE is
+missing from the stock package entirely (previous section). Intel QSV is
+*compiled in* correctly by Ubuntu's package but has a confirmed, reproducible
+bug that breaks every real encode — see `docs/hardware-encoding-intel.md`
+section 3 for the measured failure and the independent confirmation
+([HandBrake/HandBrake#7962](https://github.com/HandBrake/HandBrake/issues/7962))
+that a source build fixes it. Both fixes are the same mechanism (rebuild
+`HandBrakeCLI` from source with the right `--enable-*` flags), so this is one
+variant, not two.
+
+AMF code path present in the two binaries (`grep -c -a -F libamfrt64`):
+
+```text
+stock   /usr/bin/HandBrakeCLI       : 0
+variant /usr/local/bin/HandBrakeCLI : 1
+```
+
+Live encoder list inside the variant, on a machine with no AMD GPU passed
+through:
+
+```text
+svt_av1
+svt_av1_10bit
+ffv1
+x264
+x264_10bit
+x265
+x265_10bit
+x265_12bit
+mpeg4
+mpeg2
+VP8
+VP9
+VP9_10bit
+dnxhr
+dnxhr_10bit
+ff_prores
+theora
+```
+
+`vce_h264` and friends are absent here **by design**: libhb only lists them
+once AMD's proprietary AMF runtime has loaded and an AMF encoder component has
+reported its capabilities. On a host with an RDNA1/RDNA2 card and
+`amf-amdgpu-pro` installed and mounted in, they appear, and
+`rootfs/usr/local/bin/handbrake-gpu.sh` then picks `vce_h264` up without any
+code change, because it looks the id up instead of hardcoding it. This part
+is unverified — no AMD hardware is available to test on.
+
+**QSV is different: it was verified end to end on real Intel hardware.** With
+`--device /dev/dri` passed through, the SAME variant binary correctly detects
+and uses `qsv_h264`, and — unlike the stock package — the conversion actually
+succeeds. Full measured evidence, including the exact mux failure the stock
+package produces and the working fix, is in
+`docs/hardware-encoding-intel.md`.
+
+Image size (`docker inspect ... --format '{{.Size}}'`):
+
+```text
+handbrake:gpu       : 3056645666 bytes (2.85 GiB)
+handbrake:gpu-full   : 3113845163 bytes (2.90 GiB)
+```
+
+The delta is ~54.5 MiB — one recompiled `HandBrakeCLI` plus `mesa-va-drivers`
+and `vainfo`, not the multi-gigabyte build toolchain. If a future change makes
+that delta balloon, the multi-stage split in `Dockerfile.gpu` has broken and
+the builder stage is leaking into the final image.
