@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or support
+    url: https://github.com/junkerderprovinz/handbrake/discussions
+    about: For usage questions that are not a bug report.

@@ -1,0 +1,86 @@
+name: GPU hardware report
+description: Tell us whether NVIDIA, Intel or AMD hardware encoding worked on your machine
+title: "[hardware] "
+labels: ["hardware-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping out. NVIDIA NVENC and Intel QSV have been verified on
+        real hardware by the maintainer; AMD VCE has not, since there is no AMD
+        GPU here to test on. A report on any vendor still helps, especially a
+        different GPU generation than what has already been confirmed. Reports
+        that say it did not work are just as welcome as the ones that say it did.
+  - type: dropdown
+    id: vendor
+    attributes:
+      label: Which GPU_VENDOR did you set?
+      options:
+        - nvidia
+        - intel
+        - amd
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Did hardware encoding engage?
+      options:
+        - "Yes, and it was clearly faster"
+        - "Yes, but it was not faster"
+        - "No, it fell back to software encoding"
+        - "No, conversions failed"
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU model
+      placeholder: "Intel Arc A380 / Intel UHD 770 / Radeon RX 6700 XT / RTX 4070"
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host OS and kernel
+      placeholder: "Unraid 7.x, kernel 6.x"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Image version
+      description: "Output of: docker exec handbrake cat /etc/handbrake-build"
+      placeholder: "sha=abc1234 date=..."
+    validations:
+      required: true
+  - type: textarea
+    id: diag
+    attributes:
+      label: GPU diagnostics
+      description: "Output of: docker exec handbrake cat /config/handbrake-gpu.log"
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Container log lines
+      description: "Output of: docker logs handbrake 2>&1 | grep handbrake-gpu"
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Speed before and after, encoder you used, anything odd.
+    validations:
+      required: false
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before you post
+      options:
+        - label: I checked the pasted output for anything private, such as file names or IP addresses.
+          required: true
