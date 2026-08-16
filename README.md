@@ -85,6 +85,7 @@ What you get beyond bare HandBrake:
 |---|:---:|:---:|
 | Web stack | **Selkies (WebRTC/H.264)** | noVNC |
 | Base | Ubuntu (glibc) | Alpine (musl) |
+| NVIDIA NVENC encoding | ✅ | ❌ ([open since 2019](https://github.com/jlesage/docker-handbrake/issues/49)) |
 | Dark mode default | ✅ | opt-in via `DARK_MODE=1` |
 | Watch-folder conversion | ✅ | ✅ |
 | Browser clipboard | ✅ | ⚠️ |
@@ -158,7 +159,7 @@ log on the very first start.
 | `HANDBRAKE_THEME` | `dark` | `dark` or `light` — see [Dark Mode](#7-dark-mode) |
 | `APP_NICENESS` | `0` | `nice` level (0-19) for the GUI and every transcode |
 | `KEYBOARD_LAYOUT` | `us` | X keyboard layout loaded at session start |
-| `GPU_VENDOR` | `none` | `none` today — see [Hardware Encoding](#8-hardware-encoding) |
+| `GPU_VENDOR` | `none` | `none` or `nvidia`. `nvidia` encodes watch-folder jobs on the GPU — see [Hardware Encoding](#8-hardware-encoding) |
 | `CUSTOM_USER` / `PASSWORD` | empty | Set both to require a login on the WebUI; empty means no login |
 | `CUSTOM_PORT` / `CUSTOM_HTTPS_PORT` | `3000` / `3001` | Internal WebUI ports |
 
@@ -218,17 +219,92 @@ source of truth. Change it in the template and restart the container.
 
 ## 8. Hardware Encoding
 
-**This release ships software encoding only.** `GPU_VENDOR` defaults to `none`;
-setting it to `nvidia`, `intel` or `amd` logs a clear warning and still encodes
-in software. NVENC, QSV and VCN support are being added in follow-up releases.
+`GPU_VENDOR=nvidia` encodes every watch-folder job on an NVIDIA GPU using
+HandBrake's NVENC encoder instead of the CPU. This is the feature the Alpine-based
+community image has never been able to ship: NVIDIA's userspace libraries are
+glibc binaries that musl cannot load, so its NVENC request has been
+[open since 2019](https://github.com/jlesage/docker-handbrake/issues/49). This
+image is Ubuntu-based, so the standard NVIDIA container runtime just works.
 
-The encoders this build actually contains are recorded in
-[`docs/handbrake-capabilities.md`](docs/handbrake-capabilities.md) and inside
-the image:
+**Status:** NVENC is developer-verified on real hardware (NVIDIA GeForce RTX 4070
+Ti SUPER, Unraid). Intel QSV and AMD VCN are not implemented yet.
+
+### What the host needs
+
+| Requirement | Value |
+|---|---|
+| Unraid plugin | **Nvidia-Driver** (ich777), from Community Applications |
+| Extra Parameters | `--runtime=nvidia` |
+| `NVIDIA_VISIBLE_DEVICES` | a GPU UUID from `nvidia-smi -L` on the host, or `all` |
+| `NVIDIA_DRIVER_CAPABILITIES` | `compute,video,utility` (or `all`) |
+| `GPU_VENDOR` | `nvidia` |
+
+`NVIDIA_DRIVER_CAPABILITIES` matters more than it looks: with the variable unset
+the NVIDIA runtime defaults to `utility,compute`, which does **not** include
+`video` — and `video` is the capability that injects `libnvidia-encode.so.1`,
+the library NVENC actually calls.
+
+Plain Docker:
 
 ```sh
-docker exec handbrake cat /usr/local/share/handbrake-cli-help.txt
+docker run -d \
+  --name=handbrake \
+  --runtime=nvidia \
+  -e NVIDIA_VISIBLE_DEVICES=all \
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
+  -e GPU_VENDOR=nvidia \
+  -p 3000:3000 -p 3001:3001 \
+  -e PUID=99 -e PGID=100 -e TZ=Europe/Vienna \
+  -v /mnt/user/appdata/handbrake:/config \
+  -v /mnt/user/media/watch:/watch \
+  -v /mnt/user/media/converted:/output \
+  --restart unless-stopped \
+  ghcr.io/junkerderprovinz/handbrake:latest
 ```
+
+### What it changes
+
+- **Watch-folder jobs only.** `GPU_VENDOR` adds `--encoder nvenc_h264` to every
+  automated conversion. In the GUI you pick the encoder yourself — the NVENC
+  entries appear in HandBrake's own encoder list as soon as the GPU is passed in.
+- **H.264 by default, on purpose.** The default preset is an x264 preset, so
+  `nvenc_h264` keeps the delivered codec identical and only swaps the encoder.
+  For HEVC, set
+  `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS=--encoder nvenc_h265` — custom args
+  are appended last, so they win.
+- **A HandBrake hardware preset is left alone.** If
+  `AUTOMATED_CONVERSION_PRESET` already names an NVENC preset, the container does
+  not override its encoder.
+- **Speed presets.** NVENC does not understand x264 speed names such as
+  `veryfast`; HandBrake substitutes its own default. To control the tradeoff
+  yourself, add `--encoder-preset <name>` to the custom args — the valid names
+  are listed by
+  `docker exec handbrake HandBrakeCLI --encoder-preset-list nvenc_h264`.
+- **Hardware decoding (NVDEC) stays off.** HandBrake disables hardware decoding
+  as soon as any filter runs, and every stock preset crops or scales, so it would
+  buy nothing by default. Force it with
+  `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS=--enable-hw-decoding nvdec` if your
+  preset has no filters.
+
+### Confirming it is actually on
+
+```sh
+docker logs handbrake 2>&1 | grep '\[handbrake-gpu\]'
+docker exec handbrake cat /run/handbrake/gpu-args    # empty means software encoding
+```
+
+A working GPU logs the encoder, the driver library and the GPU name. Anything
+else logs an `ERROR:` block naming the exact fix and falls back to software
+encoding — the container keeps converting either way, it just uses the CPU.
+
+The container never guesses an encoder name: at start-up it asks the bundled
+`HandBrakeCLI` which encoders it can actually use on your GPU and picks from
+that list, so a driver or GPU that cannot do NVENC is detected instead of
+assumed.
+
+The measured details for this build, including the NVENC encoders it offers on
+a working GPU and the hardware evidence behind the "developer-verified" claim,
+are in [`docs/hardware-encoding-nvidia.md`](docs/hardware-encoding-nvidia.md).
 
 <br>
 
@@ -283,6 +359,34 @@ reached the process:
 docker exec handbrake sh -c 'cat /proc/$(pgrep -x ghb)/environ | tr "\0" "\n" | grep GTK_THEME'
 ```
 It must print `GTK_THEME=Adwaita:dark`.
+
+**`GPU_VENDOR=nvidia` but the log says "no /dev/nvidia* device node".** The
+container was not started through the NVIDIA runtime. Add `--runtime=nvidia` to
+Extra Parameters and set `NVIDIA_VISIBLE_DEVICES` to a UUID from `nvidia-smi -L`
+(Unraid needs the Nvidia-Driver plugin installed first). Conversions keep running
+in software until then.
+
+**The log says `libnvidia-encode.so.1` is missing.** The GPU is passed in but the
+driver capabilities are too narrow. Set
+`NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`; the default of the NVIDIA
+runtime leaves `video` out, and `video` is what injects the encoder library.
+
+**The log says HandBrakeCLI "offers none of" the NVENC encoders.** The GPU and
+the driver library are both there, but HandBrake itself will not use NVENC on
+this machine. HandBrake only lists a hardware encoder it can currently use, so
+the usual cause is an NVIDIA driver older than HandBrake's minimum — update the
+Nvidia-Driver plugin. The log line `Encoders HandBrakeCLI offers here:` shows
+exactly what it did find.
+
+**NVENC is on but the files are still slow.** Check which encoder ran:
+
+```sh
+grep -i nvenc /mnt/user/appdata/handbrake/handbrake-watch.log | tail -n 5
+```
+
+If the job log names a software encoder, your preset is a hardware preset the
+container deliberately did not override, or your custom args set `--encoder`
+themselves — custom args are applied last and win.
 
 **Which image am I actually running?**
 
