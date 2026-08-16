@@ -53,33 +53,45 @@ was compiled with (see the encoder list below for that).
                                theora
 ```
 
-**Hardware encoders present in this build:** none
+**Hardware encoders listed in this dump:** none — **and that is expected, not
+a defect.** See below.
 
-**Hardware encoders absent:** `nvenc_h264`, `nvenc_h265`, `nvenc_h265_10bit`,
-`nvenc_av1`, `qsv_h264`, `qsv_h265`, `qsv_av1`, `vce_h264`, `vce_h265`
+**Corrected finding (superseding an earlier, wrong note in this file):** an
+initial reading of this dump concluded the Ubuntu package was compiled
+without NVENC/QSV/VCE support at all, and that Plans 2 and 3 would need a
+source-build re-scope. That conclusion was wrong. Verified against the real
+Ubuntu build:
 
-**This contradicts the spec's stated expectation.** The design spec assumed
-Ubuntu's `handbrake-cli` package is built with `--enable-nvenc` and
-`--enable-qsv` (based on Ubuntu's documented default configure flags for the
-HandBrake source package). The actual `--encoder` list from Ubuntu 26.04's
-`universe` build of `handbrake-cli` 1.11.0 shows **no hardware encoder ids at
-all** — this is a statically compiled-in list (HandBrakeCLI prints every
-encoder the binary was linked against, independent of what hardware is
-present at runtime), so their absence here means the Ubuntu package itself was
-not built with NVENC/QSV/VCE support, not merely that this build host lacks a
-GPU.
+- The actual Launchpad build log for `handbrake 1.11.0~us1-0ubuntu1`
+  (`resolute`, amd64) prints `Enable NVENC: True` and `Enable QSV: True`
+  (`Enable VCE: False`) — both NVENC and QSV genuinely ARE compiled in.
+  `libffmpeg-nvenc-dev` and `libvpl-dev` are real build-dependencies in
+  `debian/control`; only `libamfrt64` (AMD's proprietary AMF runtime) is
+  absent, which is why VCE alone is truly not compiled in.
+- `libhb/common.c`'s `hb_video_encoder_is_enabled()` gates every hardware
+  encoder behind a **live availability probe**
+  (`hb_nvenc_h264_available()`, `hb_qsv_video_encoder_is_available()`, …),
+  not just a compile-time flag. This dump was captured during `docker build`
+  on a builder with no GPU attached, so the probe correctly returns
+  unavailable and `libhb` filters every `nvenc_*`/`qsv_*` id out of the
+  `--encoder` list before it is ever printed — **even though the binary has
+  them compiled in.** A build-time capture can never show a hardware
+  encoder, on any machine, regardless of what that machine's real hardware
+  will be at runtime.
 
-**Impact on Plans 2 and 3 (NVIDIA NVENC / Intel QSV + AMD VCN):** both plans
-were written assuming only runtime libraries and `handbrake-gpu.sh` argument
-selection were needed on top of the distro package. That assumption does not
-hold. Delivering real hardware encoding will require either (a) compiling
-HandBrake from source with `--enable-nvenc --enable-qsv` in this Dockerfile
-instead of installing the distro package, or (b) sourcing a differently built
-package/PPA that includes them, and re-verifying against a host with the
-relevant GPU actually attached to confirm the encoder appears **and** that a
-real hardware-accelerated conversion succeeds. Flagged here rather than
-silently adjusted in either GPU plan — those plans need a joint re-scope
-before implementation starts.
+**Impact on Plans 2 and 3 (NVIDIA NVENC / Intel QSV + AMD VCN): none — no
+re-scope needed.** Both plans already designed around exactly this behavior
+before this dump was even recorded: `handbrake-gpu.sh` asks a **live**
+`HandBrakeCLI --help` call inside the running container (as the runtime user,
+with the real GPU attached) for the encoder id, and explicitly documents that
+this build-time dump is expected to list nothing. Plan 3 additionally
+confirms QSV needs only two runtime packages (`libmfx-gen1.2`,
+`intel-media-va-driver-non-free`) since the oneVPL dispatcher (`libvpl2`) is
+already a dependency of the apt-installed package — no rebuild. AMD VCE is
+the one real exception: the shipped binary has no VCE code path at all, and
+Plan 3's separate `Dockerfile.vce` (source build with `--enable-vce` plus
+AMD's proprietary AMF runtime) is the already-designed, correct answer for
+that case.
 
 ## Container formats (`-f/--format`)
 
