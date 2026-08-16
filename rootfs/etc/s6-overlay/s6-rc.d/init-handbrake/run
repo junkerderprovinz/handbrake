@@ -32,6 +32,27 @@ cp -af /defaults/autostart "${CONFIG_HOME}/openbox/autostart"
 chmod 0755 "${CONFIG_HOME}/openbox/autostart"
 log "autostart synced from /defaults/autostart"
 
+# -- 2b) openbox window rule: no title bar on ghb's main window ---------------
+# Kiosk look, same approach as krusader and jdownloader. ghb's WM_CLASS is
+# "fr.handbrake.ghb" (its GTK4 application ID, confirmed live via `xprop`, not
+# the auto-capitalized "Ghb" a plain binary name would get). Scoped to
+# type="normal" like krusader (not jdownloader's WM-wide class="*"), because
+# ghb's dialogs (Preferences, Queue, Activity Log, Open Source) share the same
+# WM_CLASS as the main window and should keep their decorations and natural
+# size — a class-only rule would force-maximize and de-decorate those too.
+RC=/etc/xdg/openbox/rc.xml
+if [ -f "${RC}" ]; then
+    python3 - "${RC}" <<'PYEOF' && log "openbox rc.xml: decor=no on ghb's main window" || log "openbox rc.xml patch failed (non-fatal)"
+import sys
+rc = sys.argv[1]
+s = open(rc).read()
+rule = '  <application class="fr.handbrake.ghb" type="normal"><decor>no</decor><maximized>yes</maximized></application>\n'
+if 'class="fr.handbrake.ghb"' not in s and '</applications>' in s:
+    s = s.replace('</applications>', rule + '</applications>', 1)
+    open(rc, 'w').write(s)
+PYEOF
+fi
+
 # -- 3) Theme (HandBrake's native GTK4 dark mode) -----------------------------
 /usr/local/bin/handbrake-theme.sh "${HANDBRAKE_THEME:-dark}" || log "theme hook failed (non-fatal)"
 
