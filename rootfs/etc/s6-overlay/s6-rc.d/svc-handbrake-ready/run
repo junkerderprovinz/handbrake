@@ -1,0 +1,72 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# -----------------------------------------------------------------------------
+# svc-handbrake-ready — print a loud "READY" banner once the WebUI actually
+# serves AND the HandBrake GUI process is alive, so the user knows the first
+# start has finished. House standard: every own-image container prints an
+# "<APP> IS READY" banner directly under the ASCII brand banner, as the LAST
+# block of the container log.
+# -----------------------------------------------------------------------------
+FLAG="/run/handbrake-ready.printed"
+
+# /run is tmpfs (wiped on every container start) -> the banner prints once per start.
+if [[ -f "${FLAG}" ]]; then
+    exec sleep infinity
+fi
+
+# 1) Wait for the Selkies WebUI (nginx) to accept connections on its internal
+#    HTTP port (3000 is always served regardless of the HTTPS preference).
+ready=0
+for _ in $(seq 1 150); do
+    if (exec 3<>/dev/tcp/127.0.0.1/3000) 2>/dev/null; then
+        exec 3>&- 3<&-
+        ready=1
+        break
+    fi
+    sleep 2
+done
+
+# 2) Wait for the GUI process itself. A serving WebUI only proves Selkies; the
+#    banner must not claim HandBrake is up while ghb is still starting or is
+#    crash-looping.
+gui=0
+if [[ "${ready}" -eq 1 ]]; then
+    for _ in $(seq 1 60); do
+        if pgrep -x ghb >/dev/null 2>&1; then
+            gui=1
+            break
+        fi
+        sleep 2
+    done
+fi
+
+# Small settle so HandBrake's window is actually drawn before we announce.
+[[ "${gui}" -eq 1 ]] && sleep 4
+
+case "${HANDBRAKE_THEME:-dark}" in
+    light | Light | Adwaita) TH="Light" ;;
+    *) TH="Dark Mode" ;;
+esac
+
+/usr/local/bin/print-banner.sh "HandBrake for Unraid" "${TH} · Selkies · GTK4" 2>/dev/null || true
+
+if [[ "${gui}" -eq 1 ]]; then
+    echo "  ✓ HANDBRAKE IS READY"
+    echo "    Open the WebUI via HTTPS on port ${CUSTOM_HTTPS_PORT:-3001}"
+    if [[ "${AUTOMATED_CONVERSION:-1}" != "0" ]]; then
+        echo "    Watch-folder conversion is active — drop a video into /watch"
+    fi
+    echo ""
+elif [[ "${ready}" -eq 1 ]]; then
+    echo "  ! HANDBRAKE WEBUI IS UP, BUT THE GUI DID NOT START"
+    echo "    Check /config/handbrake-gui.log and the log above"
+    echo ""
+else
+    echo "  ✗ HANDBRAKE DID NOT BECOME READY"
+    echo "    The WebUI never answered within 5 minutes — check the log above"
+    echo ""
+fi
+
+touch "${FLAG}"
+# Longrun: stay up so s6 does not restart us and re-print the banner.
+exec sleep infinity
