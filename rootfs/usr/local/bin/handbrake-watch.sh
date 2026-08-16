@@ -377,6 +377,7 @@ declare -A SEEN_AT
 # ---- main loop -------------------------------------------------------------
 while true; do
     for watch_dir in "${WATCH_DIRS[@]}"; do
+        processed=0
         while IFS= read -r -d '' src; do
             base="$(basename -- "${src}")"
             case "${base}" in .*) continue ;; esac
@@ -397,6 +398,14 @@ while true; do
             fi
             [ $(( now - ${SEEN_AT[${src}]} )) -ge "${STABLE_TIME}" ] || continue
 
+            # -- cross-instance lock -----------------------------------------
+            # Two containers may watch the same folder to convert twice as many
+            # files at once. Whoever creates the lock directory first owns this
+            # file; everybody else moves on to the next one.
+            if ! acquire_lock "${watch_dir}" "${src}"; then
+                continue
+            fi
+
             # -- destination -------------------------------------------------
             out_base="${OUTPUT_DIR}"
             case "${OUTPUT_SUBDIR}" in
@@ -416,19 +425,36 @@ while true; do
             if [ -e "${dst}" ] && ! truthy "${AUTOMATED_CONVERSION_OVERWRITE_OUTPUT:-0}"; then
                 log "skip '${base}': ${dst} already exists (AUTOMATED_CONVERSION_OVERWRITE_OUTPUT=0)"
                 printf '%s\n' "${key}" >> "${DONE_LIST}"
+                release_lock
                 continue
             fi
 
-            CURRENT_PARTIAL="$(partial_path "${out_base}" "${stem}.${FORMAT}")"
+            # -- pre-conversion hook -----------------------------------------
+            HB_INPUT="${src}"
+            HB_OUTPUT="${dst}"
+            HB_STATUS=""
+            HB_WATCH_DIR="${watch_dir}"
+            if ! run_hook pre_conversion.sh "${dst}" "${src}" "${PRESET}"; then
+                log "pre_conversion.sh refused '${base}' — skipping it (recorded as failed)"
+                printf '%s\n' "${key}" >> "${FAILED_LIST}"
+                release_lock
+                continue
+            fi
+
+            CURRENT_PARTIAL="$(staging_path "${stem}.${FORMAT}")"
             rm -f -- "${CURRENT_PARTIAL}"
 
             log "converting '${src}' -> '${dst}'"
             started="$(date +%s)"
-            if hb_run "${src}" "${CURRENT_PARTIAL}" && [ -s "${CURRENT_PARTIAL}" ]; then
-                mv -f -- "${CURRENT_PARTIAL}" "${dst}"
+            processed=$(( processed + 1 ))
+            if hb_run "${src}" "${CURRENT_PARTIAL}" \
+               && [ -s "${CURRENT_PARTIAL}" ] \
+               && finalise_output "${CURRENT_PARTIAL}" "${dst}"; then
                 CURRENT_PARTIAL=""
                 took=$(( $(date +%s) - started ))
                 log "done '${base}' in ${took}s -> ${dst}"
+                notify normal "Conversion finished" "${base} in ${took}s"
+                HB_STATUS="0"
                 if truthy "${AUTOMATED_CONVERSION_KEEP_SOURCE:-1}"; then
                     printf '%s\n' "${key}" >> "${DONE_LIST}"
                 else
@@ -443,8 +469,26 @@ while true; do
                 log "FAILED '${src}' — it will not be retried until the file changes."
                 log "last 20 lines of ${JOB_LOG}:"
                 tail -n 20 "${JOB_LOG}" || true
+                notify critical "Conversion failed" "${base} — see /config/handbrake-watch.log"
+                HB_STATUS="1"
             fi
+
+            # -- post-conversion hook ----------------------------------------
+            # Runs for success and failure alike, and only after the finished
+            # file already reached its final path. Its exit code is ignored.
+            run_hook post_conversion.sh "${HB_STATUS}" "${dst}" "${src}" "${PRESET}" || true
+            release_lock
         done < <(find "${watch_dir}" -type f -print0 2>/dev/null)
+
+        # -- per-folder hook, only after a pass that actually did something ---
+        # An idle container must stay quiet, so this never fires on an empty pass.
+        if [ "${processed}" -gt 0 ]; then
+            HB_INPUT=""
+            HB_OUTPUT=""
+            HB_STATUS=""
+            HB_WATCH_DIR="${watch_dir}"
+            run_hook post_watch_folder_processing.sh "${watch_dir}" || true
+        fi
     done
     sleep "${CHECK_INTERVAL}"
 done
