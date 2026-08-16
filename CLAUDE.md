@@ -131,6 +131,16 @@ The image stamps its build SHA/date to `/etc/handbrake-build`.
   test a rip. The README says so and must keep saying so until someone confirms
   it. `/dev/sg*` is deliberately not in that list: on a NAS that group owns every
   raw disk.
+- **Disk-full during a conversion is verified-safe, not just assumed.**
+  Tested against a real, size-limited output filesystem: `HandBrakeCLI`'s own
+  muxer detects `ENOSPC` (`av_interleaved_write_frame failed with error 'No
+  space left on device'`) and exits non-zero, `hb_run()` propagates that,
+  nothing corrupt lands in `/output`, and the source is neither deleted nor
+  marked done. jlesage/docker-handbrake has a confirmed bug in the opposite
+  direction (a full disk gets marked successful and the source deleted,
+  [issue #435](https://github.com/jlesage/docker-handbrake/issues/435)); do
+  not weaken the `hb_run() && [ -s ... ] && finalise_output()` chain in the
+  main loop without re-running that test.
 - **GPU support lives in `handbrake-gpu.sh` only.** It resolves `GPU_VENDOR`
   (`none` | `nvidia` | `intel` | `amd`) into the extra `HandBrakeCLI` arguments
   written to `/run/handbrake/gpu-args`, and writes a diagnostics report to
