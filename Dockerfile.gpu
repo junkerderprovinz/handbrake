@@ -58,9 +58,11 @@ RUN set -eux; \
     [ "$(dpkg --print-architecture)" = "amd64" ] \
         || { echo "ERROR: this variant is amd64 only (QSV and AMF are both x86-64 only)"; exit 1; }
 
-# HandBrake's own documented Ubuntu build dependencies, plus libva-dev and
-# libvpl-dev for --enable-qsv (the same two packages Ubuntu's own
-# debian/control lists as amd64 build-depends for handbrake-cli).
+# HandBrake's own documented Ubuntu build dependencies, plus libva-dev,
+# libvpl-dev and libdrm-dev for --enable-qsv (the same three packages
+# Ubuntu's own debian/control lists as amd64 build-depends for handbrake-cli;
+# libdrm-dev was missed on the first pass here — libhb/ports.c includes
+# libdrm/drm.h directly and the build fails at compile time without it).
 RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -71,7 +73,7 @@ RUN set -eux; \
         libtool-bin libturbojpeg0-dev libvorbis-dev libx264-dev libxml2-dev \
         libvpx-dev m4 make meson nasm ninja-build patch pkg-config tar \
         zlib1g-dev curl libssl-dev clang python3 \
-        libva-dev libvpl-dev
+        libva-dev libvpl-dev libdrm-dev
 
 RUN set -eux; \
     git clone --depth 1 --branch "${HANDBRAKE_TAG}" \
