@@ -103,6 +103,54 @@ RUN set -eux; \
     locale-gen en_US.UTF-8
 
 # ---------------------------------------------------------------------------
+# Intel Quick Sync Video (QSV) runtime — amd64 only
+# ---------------------------------------------------------------------------
+# Ubuntu builds handbrake-cli with --enable-qsv on amd64 only, and the .deb
+# already depends on libvpl2 (the oneVPL DISPATCHER) plus libva2/libva-drm2, so
+# those arrive with the handbrake-cli install above. What a dispatcher still
+# needs at run time is an implementation and a VA-API driver, and neither can be
+# a package dependency because both are hardware specific:
+#
+#   libmfx-gen1.2                   oneVPL GPU runtime (Intel Gen12+ / Xe / Arc)
+#   intel-media-va-driver-non-free  iHD VA-API driver. The free variant is
+#                                   sufficient for DECODING; ENCODING needs the
+#                                   non-free build (Debian wiki,
+#                                   HardwareVideoAcceleration). It lives in
+#                                   multiverse, which is why the component is
+#                                   enabled below. Listed in NOTICE.
+#   vainfo, libvpl-tools            diagnostics. handbrake-gpu.sh writes their
+#                                   output to /config/handbrake-gpu.log, which is
+#                                   the only evidence a user with Intel hardware
+#                                   can send us — this path cannot be verified by
+#                                   the maintainer.
+#
+# arm64 has no Quick Sync and none of these packages exist there, so the whole
+# layer is a no-op with a log line on that architecture.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    if [ "${arch}" != "amd64" ]; then \
+        echo "handbrake: Intel QSV runtime skipped on ${arch} (Quick Sync is x86-64 only)"; \
+        exit 0; \
+    fi; \
+    if ! grep -qE '^Components:.*\bmultiverse\b' /etc/apt/sources.list.d/ubuntu.sources; then \
+        sed -i '/^Components:/ s/$/ multiverse/' /etc/apt/sources.list.d/ubuntu.sources; \
+    fi; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libmfx-gen1.2 \
+        intel-media-va-driver-non-free \
+        vainfo \
+        libvpl-tools; \
+    [ -e /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so ] \
+        || { echo "ERROR: iHD_drv_video.so missing after installing intel-media-va-driver-non-free"; exit 1; }; \
+    command -v vainfo >/dev/null || { echo "ERROR: vainfo missing"; exit 1; }; \
+    command -v vpl-inspect >/dev/null || { echo "ERROR: vpl-inspect missing (libvpl-tools layout changed)"; exit 1; }; \
+    echo "handbrake: QSV runtime installed ->"; \
+    dpkg-query -W -f '${Package} ${Version}\n' libmfx-gen1.2 intel-media-va-driver-non-free libvpl2; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# ---------------------------------------------------------------------------
 # Fail loudly if the HandBrake packaging layout ever moves, and RECORD what this
 # build can actually do. The three dumps below are the ground truth used by
 # docs/handbrake-capabilities.md and by the GPU plans — never guess an encoder
@@ -194,10 +242,16 @@ ENV S6_KILL_GRACETIME=15000 \
 # HANDBRAKE_THEME  – dark (default) | light. Drives GTK_THEME; see
 #                    handbrake-theme.sh. Dark is HandBrake's own native GTK dark
 #                    mode (stock Adwaita dark), not a custom restyle.
-# GPU_VENDOR       – none (default) | nvidia | intel | amd. v1 ships NO GPU
-#                    acceleration: any value other than "none" logs a clear
-#                    warning and falls back to software encoding. The seam is
+# GPU_VENDOR       – none (default) | nvidia | intel | amd. The seam is
 #                    /usr/local/bin/handbrake-gpu.sh -> /run/handbrake/gpu-args.
+#                    "nvidia" needs the NVIDIA container runtime (--runtime=nvidia)
+#                    plus NVIDIA_DRIVER_CAPABILITIES=compute,video,utility.
+#                    "intel" needs /dev/dri passed through (amd64 only; the QSV
+#                    runtime is installed above). "amd" needs a HandBrakeCLI
+#                    built with --enable-vce plus AMD's proprietary AMF runtime,
+#                    neither of which this image can ship — see Dockerfile.vce.
+#                    Any vendor that cannot be honoured logs the reason and
+#                    falls back to software encoding.
 # APP_NICENESS     – nice level applied to ghb and to every HandBrakeCLI run
 #                    (0..19; negative values need extra privileges and are
 #                    clamped to 0).
