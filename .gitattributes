@@ -1,0 +1,17 @@
+# Shell scripts and the init banner run on Linux — always store and check out LF.
+*.sh text eol=lf
+.github/assets/banner-raw.txt text eol=lf
+
+# Everything under rootfs/ ships into the Linux image: extensionless s6-rc.d
+# service scripts (run / up / type), the openbox autostart, the session starter
+# and configs. No binaries live here — pin the whole tree to LF so a CRLF
+# checkout on Windows can never break a shebang inside the image.
+rootfs/** text eol=lf
+
+# Workflows are parsed by GitHub's YAML reader and by shellcheck in CI.
+.github/workflows/*.yml text eol=lf
+
+# Binary assets: never touched by line-ending normalisation.
+*.png binary
+*.jpg binary
+*.ico binary
