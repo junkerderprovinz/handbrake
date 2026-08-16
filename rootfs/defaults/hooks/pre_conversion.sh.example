@@ -1,0 +1,23 @@
+#!/bin/sh
+# HandBrake pre-conversion hook.
+#
+# ENABLE IT: copy this file to /config/hooks/pre_conversion.sh (drop the
+# .example suffix). The .example files themselves are refreshed from the image on
+# every start and are never executed.
+#
+# Runs immediately before HandBrakeCLI starts on a file.
+#   $1  final output file (where the converted video will end up)
+#   $2  source file
+#   $3  HandBrake preset
+#
+# The same values are also in the environment, which is easier to read:
+#   HB_INPUT   HB_OUTPUT   HB_PRESET   HB_FORMAT   HB_WATCH_DIR
+#
+# EXIT CODE MATTERS: a non-zero exit REFUSES the file. The conversion is skipped
+# and the source is recorded in failed.list, so it is not retried until the file
+# itself changes.
+#
+# Hooks are executed with /bin/sh; the shebang above is ignored.
+
+echo "pre_conversion: ${2} -> ${1} (preset ${3})"
+exit 0
