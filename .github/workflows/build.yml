@@ -377,6 +377,99 @@ jobs:
           echo "✅ feature-parity gate passed on ${{ matrix.arch }}"
           docker rm -f "$name" >/dev/null
 
+      # ---------------------------------------------------------------------
+      # BEYOND-PARITY GATE. Three features added after full jlesage parity was
+      # reached: watch-folder directory exclusion, a daily active-hours
+      # window, and a hook for manual (non-watch-folder) GUI conversions.
+      # ---------------------------------------------------------------------
+      - name: Beyond-parity gate — ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          img=handbrake:smoke-${{ matrix.arch }}
+          name=hb-beyond
+
+          fail() {
+            echo "::error::$1"
+            echo "---- container log ----"
+            docker logs "$name" 2>&1 | tail -n 150 || true
+            docker exec "$name" cat /config/handbrake-watch.log 2>/dev/null | tail -n 60 || true
+            docker rm -f "$name" >/dev/null 2>&1 || true
+            exit 1
+          }
+
+          wait_for_webui() {
+            local deadline=$((SECONDS + 180)) up=0
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              c=$(curl -k -s -o /dev/null -w '%{http_code}' --max-time 5 https://localhost:3101/ || true)
+              if [ -n "$c" ] && [ "$c" != "000" ]; then up=1; break; fi
+              if [ -z "$(docker ps -q --filter "name=$name")" ]; then fail "container exited early"; fi
+              sleep 2
+            done
+            [ "$up" -eq 1 ] || fail "the WebUI did not respond within 180s"
+          }
+
+          command -v ffmpeg >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; }
+          ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=15:duration=2 \
+                 -c:v libx264 -pix_fmt yuv420p /tmp/hb-beyond.mkv
+
+          echo "== ignore-directories: an ignored subdir is skipped, a sibling still converts =="
+          docker run -d --name "$name" -p 3101:3001 \
+            -e AUTOMATED_CONVERSION_IGNORE_DIRECTORIES=ignoreme "$img"
+          wait_for_webui
+          docker exec "$name" sh -c 'mkdir -p /watch/ignoreme /watch/real'
+          docker cp /tmp/hb-beyond.mkv "$name":/watch/ignoreme/skip.mkv
+          docker cp /tmp/hb-beyond.mkv "$name":/watch/real/convert.mkv
+          docker exec "$name" chown -R abc:abc /watch/ignoreme /watch/real
+
+          converted=0
+          deadline=$((SECONDS + 120))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            if docker exec "$name" test -s /output/convert.mp4 2>/dev/null; then converted=1; break; fi
+            sleep 3
+          done
+          [ "$converted" -eq 1 ] || fail "the file outside the ignored directory was never converted"
+          sleep 10
+          docker exec "$name" sh -c 'test -e /output/skip.mp4' \
+            && fail "a file inside an AUTOMATED_CONVERSION_IGNORE_DIRECTORIES entry was converted anyway"
+          docker rm -f "$name" >/dev/null
+
+          echo "== active hours: idles outside a window that excludes the current UTC hour =="
+          cur_hour=$(date -u +%-H)
+          excl_start=$(( (cur_hour + 3) % 24 ))
+          excl_end=$(( (excl_start + 1) % 24 ))
+          window=$(printf '%02d-%02d' "$excl_start" "$excl_end")
+          docker run -d --name "$name" -p 3101:3001 \
+            -e AUTOMATED_CONVERSION_ACTIVE_HOURS="$window" "$img"
+          wait_for_webui
+          docker logs "$name" 2>&1 | grep -q "active hours: ${window}" \
+            || fail "the active-hours setting '${window}' never appeared in the startup log"
+          docker cp /tmp/hb-beyond.mkv "$name":/watch/outside-window.mkv
+          docker exec "$name" chown abc:abc /watch/outside-window.mkv
+          sleep 20
+          docker logs "$name" 2>&1 | grep -q "outside the active hours window (${window})" \
+            || fail "the daemon never logged that it was outside the active-hours window"
+          docker exec "$name" sh -c 'test -e /output/outside-window.mp4' \
+            && fail "a file was converted outside the configured active-hours window"
+          docker rm -f "$name" >/dev/null
+
+          echo "== manual GUI hook: HandBrake's own preferences get wired on the second start =="
+          docker run -d --name "$name" -p 3101:3001 "$img"
+          wait_for_webui
+          sleep 15
+          docker exec "$name" test -f /config/.config/ghb/preferences.json \
+            || fail "ghb never created its own preferences.json on first start"
+          docker restart "$name" >/dev/null
+          wait_for_webui
+          sleep 5
+          docker logs "$name" 2>&1 | grep -q "wired the manual-conversion GUI hook" \
+            || fail "init-handbrake never logged wiring the manual-conversion GUI hook on the second start"
+          docker exec "$name" sh -c \
+            'jq -e ".Preferences.SendFileTo == true and .Preferences.SendFileToTarget == \"/usr/local/bin/handbrake-gui-hook.sh\"" /config/.config/ghb/preferences.json' \
+            >/dev/null || fail "SendFileTo/SendFileToTarget were not wired into ghb's preferences.json"
+          docker rm -f "$name" >/dev/null
+
+          echo "✅ beyond-parity gate passed on ${{ matrix.arch }}"
+
       # CVE scan of the locally-loaded smoke image. Report-only: exit-code 0 so
       # a HIGH/CRITICAL finding never blocks the build — results land in the
       # repo's Security tab. ignore-unfixed hides CVEs with no upstream fix.

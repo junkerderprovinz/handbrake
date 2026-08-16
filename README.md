@@ -198,6 +198,8 @@ names match `jlesage/handbrake` so existing template values keep working.
 | `AUTOMATED_CONVERSION_CHECK_INTERVAL` | `5` | Seconds between watch-folder scans |
 | `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS` | empty | Extra `HandBrakeCLI` arguments appended to every job |
 | `AUTOMATED_CONVERSION_STAGING_DIR` | empty | Where in-progress conversions are written. Empty means `<output>/.handbrake-staging` |
+| `AUTOMATED_CONVERSION_IGNORE_DIRECTORIES` | empty | Space-separated directory basenames pruned from every watch-folder scan, matched anywhere in the tree |
+| `AUTOMATED_CONVERSION_ACTIVE_HOURS` | empty | Restrict conversion to a daily window, `HH-HH` (24h clock, e.g. `22-06` for overnight only). Empty means always active. Uses the container's `TZ` (default `Etc/UTC`), so set `TZ` first if the window should follow your local time |
 
 How it behaves:
 
@@ -543,6 +545,18 @@ Two behaviours worth knowing:
   the hook wins.
 
 Everything a hook prints goes to `/config/handbrake-watch.log`.
+
+**A fifth hook, `post_manual_conversion.sh`, covers conversions you start
+yourself in the GUI**, not just the watch-folder daemon. It rides on
+HandBrake's own "Send file to" preference (Preferences → When Done), which
+this image wires up automatically, so there is nothing to configure beyond
+copying the `.example` file. The contract is narrower, because it is genuinely
+all HandBrake's GUI hands over: `$1` is the finished output file only, no
+source path, no preset, and it only fires on a successful encode. This wiring
+activates from the **second** container start onward — on a brand-new
+`/config`, HandBrake has not created its own preferences file yet on the
+first boot, and this image only ever patches an existing one rather than
+overwriting HandBrake's real defaults.
 
 <br>
 

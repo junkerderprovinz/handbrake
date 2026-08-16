@@ -85,10 +85,39 @@ for w in /watch /watch2 /watch3 /watch4 /watch5; do
 done
 check_mount "${AUTOMATED_CONVERSION_OUTPUT_DIR:-/output}" "output folder"
 
-# -- 6) Ownership of everything we just created -------------------------------
+# -- 6) GUI manual-conversion hook (HandBrake's own "Send file to") -----------
+# ghb's own SendFileTo/SendFileToTarget preferences call a script with the
+# finished file after a successful manual encode (confirmed against the
+# 1.11.2 GTK source, gtk/src/callbacks.c). Its "Preferences" object is large
+# and undocumented outside that source, so this only ever PATCHES an existing
+# preferences.json with jq — writing a minimal one here would replace ghb's
+# real defaults instead of extending them. On the very first boot the file
+# does not exist yet (ghb has never run), so this activates from the second
+# boot onward; nothing here blocks the GUI from starting normally either way.
+GHB_PREFS="/config/.config/ghb/preferences.json"
+GUI_HOOK_TARGET="/usr/local/bin/handbrake-gui-hook.sh"
+if [ -f "${GHB_PREFS}" ]; then
+    if jq -e --arg t "${GUI_HOOK_TARGET}" \
+        '.Preferences.SendFileTo == true and .Preferences.SendFileToTarget == $t' \
+        "${GHB_PREFS}" > /dev/null 2>&1; then
+        : # already wired
+    elif jq --arg t "${GUI_HOOK_TARGET}" \
+        '.Preferences.SendFileTo = true | .Preferences.SendFileToTarget = $t' \
+        "${GHB_PREFS}" > "${GHB_PREFS}.tmp" 2>/dev/null && [ -s "${GHB_PREFS}.tmp" ]; then
+        mv -f "${GHB_PREFS}.tmp" "${GHB_PREFS}"
+        log "wired the manual-conversion GUI hook into ghb's preferences"
+    else
+        rm -f "${GHB_PREFS}.tmp" 2>/dev/null || true
+        log "WARNING: could not patch ${GHB_PREFS} with jq — manual-conversion GUI hook not wired this start"
+    fi
+else
+    log "ghb preferences not created yet — manual-conversion GUI hook will be wired from the next start"
+fi
+
+# -- 7) Ownership of everything we just created -------------------------------
 chown -R "${PUID:-911}:${PGID:-911}" /config/.config /config/.profile.d /config/handbrake 2>/dev/null || true
 
-# -- 7) Diagnostics -----------------------------------------------------------
+# -- 8) Diagnostics -----------------------------------------------------------
 if [ -f /etc/handbrake-build ]; then
     BUILD_SHA=$(grep '^sha='  /etc/handbrake-build | cut -d= -f2)
     BUILD_DATE=$(grep '^date=' /etc/handbrake-build | cut -d= -f2)

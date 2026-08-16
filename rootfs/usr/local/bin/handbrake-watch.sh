@@ -47,6 +47,36 @@ DONE_LIST="${STATE_DIR}/done.list"
 FAILED_LIST="${STATE_DIR}/failed.list"
 JOB_LOG="/config/handbrake-watch.log"
 
+# Directory basenames to prune out of every watch-folder scan, e.g. sync-client
+# metadata folders. Space-separated, matched anywhere in the tree.
+IGNORE_DIRS_SETTING="${AUTOMATED_CONVERSION_IGNORE_DIRECTORIES:-}"
+read -r -a IGNORE_DIR_NAMES <<< "${IGNORE_DIRS_SETTING}"
+
+# Restrict conversion to a daily time window, e.g. "22-06" for overnight only.
+# Empty (the default) means always active. Wraps past midnight when start > end.
+ACTIVE_HOURS_SETTING="${AUTOMATED_CONVERSION_ACTIVE_HOURS:-}"
+ACTIVE_START=-1
+ACTIVE_END=-1
+if [ -n "${ACTIVE_HOURS_SETTING}" ]; then
+    case "${ACTIVE_HOURS_SETTING}" in
+        [0-9]*-[0-9]*)
+            ACTIVE_START="${ACTIVE_HOURS_SETTING%%-*}"
+            ACTIVE_END="${ACTIVE_HOURS_SETTING##*-}"
+            case "${ACTIVE_START}" in *[!0-9]*) ACTIVE_START=bad ;; esac
+            case "${ACTIVE_END}"   in *[!0-9]*) ACTIVE_END=bad ;; esac
+            if [ "${ACTIVE_START}" = "bad" ] || [ "${ACTIVE_END}" = "bad" ] \
+               || [ "${ACTIVE_START}" -gt 23 ] || [ "${ACTIVE_END}" -gt 23 ]; then
+                log "WARNING: AUTOMATED_CONVERSION_ACTIVE_HOURS='${ACTIVE_HOURS_SETTING}' must be two hours 0-23 separated by '-' (e.g. 22-06) — ignoring, conversion stays always active"
+                ACTIVE_START=-1
+                ACTIVE_END=-1
+            fi
+            ;;
+        *)
+            log "WARNING: AUTOMATED_CONVERSION_ACTIVE_HOURS='${ACTIVE_HOURS_SETTING}' does not match HH-HH — ignoring, conversion stays always active"
+            ;;
+    esac
+fi
+
 # Conversion hooks. Fixed path, same as jlesage/handbrake, so a migrating user's
 # scripts land where they already expect.
 HOOKS_DIR="/config/hooks"
@@ -147,6 +177,43 @@ is_video() {
         [ "${ext}" = "${e}" ] && return 0
     done
     return 1
+}
+
+# Prints every file under $1, NUL-separated, skipping any directory whose
+# basename appears in IGNORE_DIR_NAMES anywhere in the tree (not just at the
+# watch folder's own top level).
+find_watch_dir() {
+    local wd="$1"
+    if [ "${#IGNORE_DIR_NAMES[@]}" -eq 0 ]; then
+        find "${wd}" -type f -print0 2>/dev/null
+        return
+    fi
+    local -a prune_expr=()
+    local name first=1
+    for name in "${IGNORE_DIR_NAMES[@]}"; do
+        [ -n "${name}" ] || continue
+        if [ "${first}" -eq 1 ]; then
+            prune_expr=( -name "${name}" )
+            first=0
+        else
+            prune_expr+=( -o -name "${name}" )
+        fi
+    done
+    find "${wd}" -type d \( "${prune_expr[@]}" \) -prune -o -type f -print0 2>/dev/null
+}
+
+# True when conversion should run right now. ACTIVE_START=-1 (the default,
+# AUTOMATED_CONVERSION_ACTIVE_HOURS unset or invalid) means always active.
+in_active_window() {
+    [ "${ACTIVE_START}" -eq -1 ] && return 0
+    local h
+    h="$(date +%-H)"
+    if [ "${ACTIVE_START}" -le "${ACTIVE_END}" ]; then
+        [ "${h}" -ge "${ACTIVE_START}" ] && [ "${h}" -lt "${ACTIVE_END}" ]
+    else
+        # Wraps past midnight, e.g. 22-06: active from 22:00 through 05:59.
+        [ "${h}" -ge "${ACTIVE_START}" ] || [ "${h}" -lt "${ACTIVE_END}" ]
+    fi
 }
 
 staging_path() {
@@ -370,12 +437,27 @@ log "extensions: ${VIDEO_EXTENSIONS[*]}"
 log "job log:  ${JOB_LOG}   state: ${STATE_DIR}"
 log "staging:  ${STAGING_DIR}   instance: ${INSTANCE}"
 log "hooks:    ${HOOKS_DIR}   notifications=${WEB_NOTIFICATION:-0}"
+[ "${#IGNORE_DIR_NAMES[@]}" -gt 0 ] && log "ignoring directories named: ${IGNORE_DIR_NAMES[*]}"
+[ "${ACTIVE_START}" -ne -1 ] && log "active hours: ${ACTIVE_HOURS_SETTING} (idle outside this window)"
 
 declare -A SEEN_KEY
 declare -A SEEN_AT
+WAS_ACTIVE=1
 
 # ---- main loop -------------------------------------------------------------
 while true; do
+    if ! in_active_window; then
+        if [ "${WAS_ACTIVE}" -eq 1 ]; then
+            log "outside the active hours window (${ACTIVE_HOURS_SETTING}) — idling until it opens again"
+            WAS_ACTIVE=0
+        fi
+        sleep "${CHECK_INTERVAL}"
+        continue
+    fi
+    if [ "${WAS_ACTIVE}" -eq 0 ]; then
+        log "active hours window (${ACTIVE_HOURS_SETTING}) opened — resuming conversion"
+        WAS_ACTIVE=1
+    fi
     for watch_dir in "${WATCH_DIRS[@]}"; do
         processed=0
         while IFS= read -r -d '' src; do
@@ -478,7 +560,7 @@ while true; do
             # file already reached its final path. Its exit code is ignored.
             run_hook post_conversion.sh "${HB_STATUS}" "${dst}" "${src}" "${PRESET}" || true
             release_lock
-        done < <(find "${watch_dir}" -type f -print0 2>/dev/null)
+        done < <(find_watch_dir "${watch_dir}")
 
         # -- per-folder hook, only after a pass that actually did something ---
         # An idle container must stay quiet, so this never fires on an empty pass.

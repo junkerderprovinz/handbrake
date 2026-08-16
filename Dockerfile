@@ -227,6 +227,7 @@ RUN chmod +x \
     /usr/local/bin/handbrake-web.sh \
     /usr/local/bin/handbrake-terminal.sh \
     /usr/local/bin/handbrake-notify.sh \
+    /usr/local/bin/handbrake-gui-hook.sh \
     /etc/s6-overlay/s6-rc.d/init-nologin/run \
     /etc/s6-overlay/s6-rc.d/init-handbrake/run \
     /etc/s6-overlay/s6-rc.d/init-handbrake-web/run \
@@ -293,6 +294,14 @@ ENV AUTOMATED_CONVERSION=1 \
 # jlesage/handbrake does. Set it to /staging and map that to a cache pool to keep
 # the array out of the write path during a transcode.
 ENV AUTOMATED_CONVERSION_STAGING_DIR=
+
+# Space-separated directory basenames pruned from every watch-folder scan
+# (matched anywhere in the tree, e.g. sync-client metadata folders).
+ENV AUTOMATED_CONVERSION_IGNORE_DIRECTORIES=
+
+# Restrict conversion to a daily window, "HH-HH" in 24h clock, e.g. 22-06 for
+# overnight only. Empty (the default) means always active.
+ENV AUTOMATED_CONVERSION_ACTIVE_HOURS=
 
 # ---------------------------------------------------------------------------
 # Web-surface parity with jlesage/docker-handbrake
