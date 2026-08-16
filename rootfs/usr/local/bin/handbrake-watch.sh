@@ -338,11 +338,38 @@ if [ "${#WATCH_DIRS[@]}" -eq 0 ]; then
 fi
 
 mkdir -p "${OUTPUT_DIR}"
+
+# ---- staging directory ------------------------------------------------------
+# Refuse to run rather than fail every single conversion: an unwritable staging
+# directory is a permanent misconfiguration, not a transient error, and silently
+# retrying it forever would just fill the log.
+mkdir -p -- "${STAGING_DIR}" 2>/dev/null || true
+if [ ! -d "${STAGING_DIR}" ] || [ ! -w "${STAGING_DIR}" ]; then
+    log "ERROR: the staging directory '${STAGING_DIR}' does not exist or is not writable."
+    log "       Every conversion would fail. Either fix the host folder's owner,"
+    log "       e.g. on the Unraid console:  chown nobody:users /mnt/user/<share>"
+    log "       or point AUTOMATED_CONVERSION_STAGING_DIR at a writable path."
+    log "       Refusing to convert anything until this is fixed. The GUI still works."
+    exec sleep infinity
+fi
+
+# Leftovers from an unclean stop of THIS container. Another instance's files
+# carry a different instance tag and are deliberately left alone.
+find "${STAGING_DIR}" -maxdepth 1 -type f -name ".${INSTANCE}.*.partial" -delete 2>/dev/null || true
+find "${OUTPUT_DIR}" -type f -name ".${INSTANCE}.*.moving" -delete 2>/dev/null || true
+for _wd in "${WATCH_DIRS[@]}"; do
+    clear_own_locks "${_wd}"
+done
+
+seed_hooks
+
 log "watching: ${WATCH_DIRS[*]}"
 log "output:   ${OUTPUT_DIR}${OUTPUT_SUBDIR:+ (subdir ${OUTPUT_SUBDIR})}  format=${FORMAT}${MUX:+ (${MUX})}"
 log "preset:   ${PRESET}   keep-source=${AUTOMATED_CONVERSION_KEEP_SOURCE:-1}   nice=${NICE_LEVEL}"
 log "extensions: ${VIDEO_EXTENSIONS[*]}"
 log "job log:  ${JOB_LOG}   state: ${STATE_DIR}"
+log "staging:  ${STAGING_DIR}   instance: ${INSTANCE}"
+log "hooks:    ${HOOKS_DIR}   notifications=${WEB_NOTIFICATION:-0}"
 
 declare -A SEEN_KEY
 declare -A SEEN_AT
