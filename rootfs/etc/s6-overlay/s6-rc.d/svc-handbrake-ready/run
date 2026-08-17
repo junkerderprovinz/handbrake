@@ -50,19 +50,29 @@ esac
 
 /usr/local/bin/print-banner.sh "HandBrake for Unraid" "${TH} · Selkies · GTK4" 2>/dev/null || true
 
+# Colored via plain ANSI SGR codes, not tput (tput needs a terminfo database
+# that may not exist in a minimal container): 32 green / 33 yellow / 31 red,
+# reset with 0. docker logs passes stdout bytes through untouched, so any
+# ANSI-aware viewer (a real terminal, Unraid's log panel) renders the color;
+# a viewer that does not understand SGR codes just shows them as inert text.
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
 if [[ "${gui}" -eq 1 ]]; then
-    echo "  ✓ HANDBRAKE IS READY"
+    echo -e "  ${GREEN}✓ HANDBRAKE IS READY${NC}"
     echo "    Open the WebUI via HTTPS on port ${CUSTOM_HTTPS_PORT:-3001}"
     if [[ "${AUTOMATED_CONVERSION:-1}" != "0" ]]; then
         echo "    Watch-folder conversion is active — drop a video into /watch"
     fi
     echo ""
 elif [[ "${ready}" -eq 1 ]]; then
-    echo "  ! HANDBRAKE WEBUI IS UP, BUT THE GUI DID NOT START"
+    echo -e "  ${YELLOW}! HANDBRAKE WEBUI IS UP, BUT THE GUI DID NOT START${NC}"
     echo "    Check /config/handbrake-gui.log and the log above"
     echo ""
 else
-    echo "  ✗ HANDBRAKE DID NOT BECOME READY"
+    echo -e "  ${RED}✗ HANDBRAKE DID NOT BECOME READY${NC}"
     echo "    The WebUI never answered within 5 minutes — check the log above"
     echo ""
 fi
