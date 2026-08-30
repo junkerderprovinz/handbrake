@@ -11,8 +11,6 @@ Thumbs.db
 *.tar.gz
 *.log
 
-# Local Claude Code / agent config (never commit)
-.claude/
 
 # Importable Unraid template deliverable (the canonical template lives in the
 # unraid-apps feed repo — this is only the local copy handed to the user)
