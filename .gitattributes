@@ -19,3 +19,7 @@ Dockerfile* text eol=lf
 *.png binary
 *.jpg binary
 *.ico binary
+
+# Generated banner assets: the generator writes LF, so pin them - otherwise a fresh
+# CRLF checkout makes every generator run report unchanged files as modified.
+.github/assets/*.svg text eol=lf
