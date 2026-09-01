@@ -660,10 +660,17 @@ so exactly one container converts it. Some ground rules:
 
 ## 12. Optical Drives
 
-> **Unverified.** The device plumbing is wired and the container is proven to run
-> correctly when no drive is present, but no optical drive was available to test
-> ripping end to end. Treat this section as best effort until somebody reports
-> back. Reports very welcome.
+> **Partly verified.** The device plumbing works. The first field report
+> ([#2](https://github.com/junkerderprovinz/handbrake/issues/2)) passed an external USB DVD
+> drive in as `/dev/sr0`, and HandBrake spun it up and read the disc structure. Ripping end
+> to end is still untested here. Reports very welcome.
+
+> **Encrypted (retail) DVDs do not work.** This image ships no `libdvdcss`, and that library
+> is not in the Ubuntu archive, so there is nothing here that can decrypt a commercial disc.
+> HandBrake reads the unencrypted IFO structure, reports `Scanning title 1 of 1`, and then
+> ends at **No Title Found**. That message on a disc that audibly spins up almost always
+> means CSS rather than a broken drive. Unencrypted discs, ISO images, `VIDEO_TS` folders
+> and `BDMV` folders are unaffected.
 
 Pass the drive in and HandBrake can use it as a source:
 
