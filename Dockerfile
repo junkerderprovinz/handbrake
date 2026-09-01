@@ -230,6 +230,7 @@ RUN chmod +x \
     /usr/local/bin/handbrake-gui-hook.sh \
     /etc/s6-overlay/s6-rc.d/init-nologin/run \
     /etc/s6-overlay/s6-rc.d/init-handbrake/run \
+    /etc/s6-overlay/s6-rc.d/init-handbrake-libdvdcss/run \
     /etc/s6-overlay/s6-rc.d/init-handbrake-web/run \
     /etc/s6-overlay/s6-rc.d/init-handbrake-web-post/run \
     /etc/s6-overlay/s6-rc.d/svc-handbrake-watch/run \
