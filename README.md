@@ -665,12 +665,33 @@ so exactly one container converts it. Some ground rules:
 > drive in as `/dev/sr0`, and HandBrake spun it up and read the disc structure. Ripping end
 > to end is still untested here. Reports very welcome.
 
-> **Encrypted (retail) DVDs do not work.** This image ships no `libdvdcss`, and that library
-> is not in the Ubuntu archive, so there is nothing here that can decrypt a commercial disc.
-> HandBrake reads the unencrypted IFO structure, reports `Scanning title 1 of 1`, and then
-> ends at **No Title Found**. That message on a disc that audibly spins up almost always
-> means CSS rather than a broken drive. Unencrypted discs, ISO images, `VIDEO_TS` folders
-> and `BDMV` folders are unaffected.
+> **Encrypted (retail) DVDs need `INSTALL_LIBDVDCSS=true`.** Out of the box this image ships
+> no `libdvdcss`, and that library is not in the Ubuntu archive, so nothing here can decrypt
+> a commercial disc. HandBrake reads the unencrypted IFO structure, reports
+> `Scanning title 1 of 1`, and then ends at **No Title Found**. That message on a disc that
+> audibly spins up almost always means CSS rather than a broken drive. Unencrypted discs,
+> ISO images, `VIDEO_TS` folders and `BDMV` folders are unaffected either way.
+
+### Encrypted DVDs (`INSTALL_LIBDVDCSS`)
+
+Set `INSTALL_LIBDVDCSS=true` and the container builds `libdvdcss` on its first start:
+
+```sh
+-e INSTALL_LIBDVDCSS=true
+```
+
+In Unraid, add it as a variable with the value `true`.
+
+The library is **not** shipped in the image. The switch uses
+[`libdvd-pkg`](https://packages.ubuntu.com/libdvd-pkg), which is Debian's and Ubuntu's own
+answer to this: the package contains no decryptor, it fetches the source and builds it on
+your machine. That is why this is a switch you flip rather than something the image carries.
+The first start with it takes about a minute and needs network access; the built package is
+cached under `/config/handbrake/libdvdcss`, so later starts install it straight from there.
+If the build fails the container starts normally without it and says so in the log.
+
+Whether decrypting a disc you own is lawful depends on where you live. That decision is
+yours, which is why nothing happens unless you set the variable.
 
 Pass the drive in and HandBrake can use it as a source:
 

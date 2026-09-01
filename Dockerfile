@@ -360,6 +360,14 @@ ENV SELKIES_MICROPHONE_ENABLED=false
 # array for no benefit: libdvdread and libdvdnav talk to /dev/srX directly.
 ENV ATTACHED_DEVICES_PERMS="/dev/sr*"
 
+# Opt-in CSS decryption for retail DVDs. Off by default: libdvdcss is not shipped
+# here and is not in the Ubuntu archive. Set INSTALL_LIBDVDCSS=true and the
+# init-handbrake-libdvdcss oneshot BUILDS it on first start via libdvd-pkg,
+# Debian's own mechanism for exactly this, and caches the result under /config.
+# Whether using it is lawful depends on where you are, which is why it is a switch
+# the operator flips rather than something the image ships. See README section 12.
+ENV INSTALL_LIBDVDCSS=false
+
 ENV LANG=en_US.UTF-8 \
     LANGUAGE=en_US:en \
     LC_ALL=en_US.UTF-8

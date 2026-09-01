@@ -1,0 +1,81 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# -----------------------------------------------------------------------------
+# init-handbrake-libdvdcss — opt-in CSS decryption for retail DVDs
+# -----------------------------------------------------------------------------
+# Off unless INSTALL_LIBDVDCSS=true. Without it HandBrake reads the unencrypted
+# IFO structure of a commercial disc, reports "Scanning title 1 of 1", and ends
+# at "No Title Found" — the drive and the /dev/sr0 wiring are fine, there is just
+# nothing in the image that can decrypt the payload (issue #2).
+#
+# libdvdcss is NOT shipped in the image and is not in the Ubuntu archive. This
+# uses libdvd-pkg, Debian's and Ubuntu's own answer to that: the package does not
+# contain the library, it fetches the source and BUILDS it here, on this machine,
+# when the operator asks for it. That is the difference between distributing a
+# decryptor and enabling one, and it is why the switch is opt-in and default off.
+#
+# Whether using it is lawful depends on where you are. That decision belongs to
+# whoever flips the switch, which is why nothing here happens on its own.
+#
+# The built .deb is cached under /config so the build runs once rather than on
+# every container start.
+# -----------------------------------------------------------------------------
+set -e
+
+log() { echo "[init-handbrake-libdvdcss] $*"; }
+
+case "${INSTALL_LIBDVDCSS,,}" in
+    true|yes|1|on) ;;
+    *) exit 0 ;;
+esac
+
+# Already present from a previous start? Nothing to do.
+if ldconfig -p 2>/dev/null | grep -q 'libdvdcss'; then
+    log "libdvdcss already installed, nothing to do"
+    exit 0
+fi
+
+CACHE="/config/handbrake/libdvdcss"
+mkdir -p "${CACHE}"
+
+# A cached .deb from an earlier build: install it and skip the network entirely.
+if compgen -G "${CACHE}/libdvdcss2_*.deb" > /dev/null; then
+    log "installing libdvdcss from the cached build in ${CACHE}"
+    if dpkg -i "${CACHE}"/libdvdcss2_*.deb 2>&1 | sed 's/^/[init-handbrake-libdvdcss] /'; then
+        ldconfig
+        log "done (cached)"
+        exit 0
+    fi
+    log "cached package would not install, rebuilding"
+fi
+
+log "INSTALL_LIBDVDCSS is set: building libdvdcss via libdvd-pkg"
+log "this needs network access and takes a minute; it runs once and is then cached"
+
+export DEBIAN_FRONTEND=noninteractive
+# libdvd-pkg asks a debconf question on install and would otherwise stall the boot.
+echo 'libdvd-pkg libdvd-pkg/build boolean true' | debconf-set-selections
+echo 'libdvd-pkg libdvd-pkg/post-invoke_hook-install boolean false' | debconf-set-selections
+
+if ! apt-get update -qq; then
+    log "ERROR: apt-get update failed, leaving the container without libdvdcss"
+    exit 0   # a failed opt-in must not stop HandBrake from starting
+fi
+if ! apt-get install -y --no-install-recommends libdvd-pkg 2>&1 | sed 's/^/[init-handbrake-libdvdcss] /'; then
+    log "ERROR: could not install libdvd-pkg, continuing without libdvdcss"
+    exit 0
+fi
+if ! dpkg-reconfigure -f noninteractive libdvd-pkg 2>&1 | sed 's/^/[init-handbrake-libdvdcss] /'; then
+    log "ERROR: the libdvdcss build failed, continuing without it"
+    exit 0
+fi
+
+# Keep the built package so the next start does not rebuild it.
+cp -f /usr/src/libdvd-pkg/libdvdcss2_*.deb "${CACHE}/" 2>/dev/null || true
+ldconfig
+
+if ldconfig -p 2>/dev/null | grep -q 'libdvdcss'; then
+    log "libdvdcss is installed; encrypted DVDs should scan now"
+else
+    log "WARNING: the build reported success but libdvdcss is not loadable"
+fi
