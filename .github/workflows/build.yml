@@ -536,8 +536,16 @@ jobs:
             'ldconfig -p | grep -q libdvdcss && exit 1 || exit 0' \
             || fail "the image ships libdvdcss; it must only ever be built on the operator's machine"
 
+          # /config has to be a real volume that outlives the container: the cache
+          # lives there, and only a RECREATED container exercises it. A plain
+          # restart keeps the writable layer, so the library is still installed
+          # and the oneshot correctly does nothing at all.
+          vol=hb-dvdcss-config
+          docker volume rm "$vol" >/dev/null 2>&1 || true
+          docker volume create "$vol" >/dev/null
+
           echo "== first start: build from source and stay bootable =="
-          docker run -d --name "$name" -e INSTALL_LIBDVDCSS=true -p 3201:3001 "$img"
+          docker run -d --name "$name" -e INSTALL_LIBDVDCSS=true -v "$vol":/config -p 3201:3001 "$img"
           wait_for_webui
           wait_for_log "libdvdcss .* is installed" 300 \
             || fail "the oneshot never reported an installed libdvdcss"
@@ -555,14 +563,24 @@ jobs:
           docker exec "$name" sh -c 'ls /config/handbrake/libdvdcss/*/libdvdcss-*.tar.gz' \
             || fail "the build was not cached under /config"
 
-          echo "== second start: install from cache, no rebuild =="
+          echo "== a plain restart finds the library still installed and does nothing =="
           docker restart "$name" >/dev/null
           wait_for_webui
+          wait_for_log "already present, nothing to do" 120 \
+            || fail "a restart rebuilt libdvdcss instead of leaving the installed one alone"
+          docker rm -f "$name" >/dev/null
+
+          echo "== a recreated container installs from the cache in /config =="
+          docker run -d --name "$name" -e INSTALL_LIBDVDCSS=true -v "$vol":/config -p 3201:3001 "$img"
+          wait_for_webui
           wait_for_log "installed (from cache)" 120 \
-            || fail "the second start did not install libdvdcss from the cache"
+            || fail "a recreated container did not install libdvdcss from the cache in /config"
+          docker logs "$name" 2>&1 | grep -q "building libdvdcss" \
+            && fail "the cache was ignored and libdvdcss was built from source again"
           docker exec "$name" sh -c 'ldconfig -p | grep -q "libdvdcss\.so\.2"' \
             || fail "libdvdcss.so.2 is not loadable after the cached install"
           docker rm -f "$name" >/dev/null
+          docker volume rm "$vol" >/dev/null
 
           echo "✅ libdvdcss gate passed on ${{ matrix.arch }}"
 
