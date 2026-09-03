@@ -186,6 +186,7 @@ log on the very first start.
 | `GPU_VENDOR` | `none` | `none`, `nvidia`, `intel` or `amd` — see [Hardware Encoding](#8-hardware-encoding) |
 | `CUSTOM_USER` / `PASSWORD` | empty | Set both to require a login on the WebUI; empty means no login |
 | `CUSTOM_PORT` / `CUSTOM_HTTPS_PORT` | `3000` / `3001` | Internal WebUI ports |
+| `INSTALL_LIBDVDCSS` | `false` | `true` builds `libdvdcss` on first start for encrypted DVDs — see [Optical Drives](#12-optical-drives) |
 
 <br>
 
@@ -660,38 +661,10 @@ so exactly one container converts it. Some ground rules:
 
 ## 12. Optical Drives
 
-> **Partly verified.** The device plumbing works. The first field report
-> ([#2](https://github.com/junkerderprovinz/handbrake/issues/2)) passed an external USB DVD
-> drive in as `/dev/sr0`, and HandBrake spun it up and read the disc structure. Ripping end
-> to end is still untested here. Reports very welcome.
-
-> **Encrypted (retail) DVDs need `INSTALL_LIBDVDCSS=true`.** Out of the box this image ships
-> no `libdvdcss`, and that library is not in the Ubuntu archive, so nothing here can decrypt
-> a commercial disc. HandBrake reads the unencrypted IFO structure, reports
-> `Scanning title 1 of 1`, and then ends at **No Title Found**. That message on a disc that
-> audibly spins up almost always means CSS rather than a broken drive. Unencrypted discs,
-> ISO images, `VIDEO_TS` folders and `BDMV` folders are unaffected either way.
-
-### Encrypted DVDs (`INSTALL_LIBDVDCSS`)
-
-Set `INSTALL_LIBDVDCSS=true` and the container builds `libdvdcss` on its first start:
-
-```sh
--e INSTALL_LIBDVDCSS=true
-```
-
-In Unraid, add it as a variable with the value `true`.
-
-The library is **not** shipped in the image. The switch uses
-[`libdvd-pkg`](https://packages.ubuntu.com/libdvd-pkg), which is Debian's and Ubuntu's own
-answer to this: the package contains no decryptor, it fetches the source and builds it on
-your machine. That is why this is a switch you flip rather than something the image carries.
-The first start with it takes about a minute and needs network access; the built package is
-cached under `/config/handbrake/libdvdcss`, so later starts install it straight from there.
-If the build fails the container starts normally without it and says so in the log.
-
-Whether decrypting a disc you own is lawful depends on where you live. That decision is
-yours, which is why nothing happens unless you set the variable.
+> **Unverified.** The plumbing is wired and the container joins the drive's group on its
+> own, but no optical drive was available here to test a rip end to end. The one field
+> report so far ([#2](https://github.com/junkerderprovinz/handbrake/issues/2)) ended at
+> **No Title Found** and is still open. Reports very welcome.
 
 Pass the drive in and HandBrake can use it as a source:
 
@@ -718,8 +691,36 @@ ISO images, DVD folders containing `VIDEO_TS` and Blu-ray folders containing
 `BDMV` also work as ordinary sources, and `.iso` files dropped into a watch
 folder are picked up by the automatic converter like any other video.
 
-Commercially encrypted DVDs are **not** supported: the container ships no
-decryption library, and adding one is out of scope for this image.
+### Encrypted DVDs (`INSTALL_LIBDVDCSS`)
+
+Out of the box this image ships no `libdvdcss`, and that library is not in the Ubuntu
+archive, so nothing here can decrypt a commercial disc. Unencrypted discs, ISO images,
+`VIDEO_TS` folders and `BDMV` folders are unaffected.
+
+Set `INSTALL_LIBDVDCSS=true` and the container builds the library itself:
+
+```sh
+-e INSTALL_LIBDVDCSS=true
+```
+
+In Unraid it is a variable in the template, off by default.
+
+The library is **not** shipped in the image. The switch downloads the release tarball from
+VideoLAN's own mirror, checks it against a checksum pinned in the container, and compiles it
+on your machine. That is the difference between distributing a decryption library and
+enabling one, and it is why the switch exists at all. The first start with it takes about 15
+seconds and needs network access; the result is cached under
+`/config/handbrake/libdvdcss/<arch>/`, so later starts install it from there in about a
+second and never touch the network. If any step fails the container starts normally without
+the library and the log says which step failed and why.
+
+Whether decrypting a disc you own is lawful depends on where you live. That decision is
+yours, which is why nothing happens unless you set the variable.
+
+> **What this is verified to do:** produce a loadable `libdvdcss.so.2`, which is the exact
+> library HandBrake's `libdvdread` looks for at runtime. CI asserts that on both
+> architectures, on a cold build and from the cache. Whether a given encrypted disc then
+> scans has not been tested here, for the same reason as above: no drive.
 
 <br>
 
@@ -781,6 +782,15 @@ has drawn its window. Wait for `HANDBRAKE IS READY` in `docker logs handbrake`.
 container user cannot write — the init log says so explicitly:
 `WARNING: watch folder /watch is NOT writable by the container user`. Fix the
 share owner on the host (`chown nobody:users /mnt/user/<share>`).
+
+**A disc ends at `No Title Found`.** Open **Activity** in the HandBrake window and
+look for a line reading `scan: DVD has N title(s)`. If it is there, the disc was
+read and the titles were rejected afterwards, most often because they are shorter
+than HandBrake's minimum duration or because the payload is encrypted, which needs
+[`INSTALL_LIBDVDCSS=true`](#12-optical-drives). If the line is missing, HandBrake
+never got a DVD structure at all: the disc may be damaged or not a DVD, or the
+drive may have no region set. The progress text `Scanning title 1 of 1` is the
+state every scan starts in and says nothing either way.
 
 **A conversion failed.** The full `HandBrakeCLI` output is in
 `/config/handbrake-watch.log`. The source is recorded in

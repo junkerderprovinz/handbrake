@@ -492,6 +492,80 @@ jobs:
 
           echo "✅ beyond-parity gate passed on ${{ matrix.arch }}"
 
+      # The opt-in CSS path. Until v1.1.0 nothing here was ever executed in CI:
+      # every gate ran with the Dockerfile default INSTALL_LIBDVDCSS=false, so a
+      # switch that silently did nothing shipped for two days. This gate turns it
+      # on and insists on a loadable library, which is the only claim the README
+      # is allowed to make (an actual disc still needs hardware nobody here has).
+      - name: libdvdcss gate — ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          img=handbrake:smoke-${{ matrix.arch }}
+          name=hb-dvdcss
+
+          fail() {
+            echo "::error::$1"
+            echo "---- container log ----"
+            docker logs "$name" 2>&1 | tail -n 150 || true
+            docker rm -f "$name" >/dev/null 2>&1 || true
+            exit 1
+          }
+
+          wait_for_webui() {
+            local deadline=$((SECONDS + 240))
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              c=$(curl -k -s -o /dev/null -w '%{http_code}' --max-time 5 https://localhost:3201/ || true)
+              { [ -n "$c" ] && [ "$c" != "000" ]; } && return 0
+              [ -z "$(docker ps -q --filter "name=$name")" ] && fail "container exited early"
+              sleep 2
+            done
+            fail "WebUI did not respond within 240s with INSTALL_LIBDVDCSS=true"
+          }
+
+          wait_for_log() {
+            local pattern="$1" deadline=$((SECONDS + ${2:-120}))
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              docker logs "$name" 2>&1 | grep -q "$pattern" && return 0
+              sleep 2
+            done
+            return 1
+          }
+
+          echo "== the switch stays off by default =="
+          docker run --rm --entrypoint sh "$img" -c \
+            'ldconfig -p | grep -q libdvdcss && exit 1 || exit 0' \
+            || fail "the image ships libdvdcss; it must only ever be built on the operator's machine"
+
+          echo "== first start: build from source and stay bootable =="
+          docker run -d --name "$name" -e INSTALL_LIBDVDCSS=true -p 3201:3001 "$img"
+          wait_for_webui
+          wait_for_log "libdvdcss .* is installed" 300 \
+            || fail "the oneshot never reported an installed libdvdcss"
+          docker logs "$name" 2>&1 | grep -q "init-handbrake-libdvdcss] ERROR" \
+            && fail "the oneshot logged an ERROR while building libdvdcss"
+          docker exec "$name" sh -c 'ldconfig -p | grep -q "libdvdcss\.so\.2"' \
+            || fail "libdvdcss.so.2 is not loadable after the build"
+
+          echo "== libdvdread looks for exactly this soname =="
+          docker exec "$name" sh -c \
+            'strings /usr/lib/*/libdvdread.so.* | grep -qx "libdvdcss.so.2"' \
+            || fail "libdvdread no longer dlopens libdvdcss.so.2 — the built soname may be wrong"
+
+          echo "== the build is cached =="
+          docker exec "$name" sh -c 'ls /config/handbrake/libdvdcss/*/libdvdcss-*.tar.gz' \
+            || fail "the build was not cached under /config"
+
+          echo "== second start: install from cache, no rebuild =="
+          docker restart "$name" >/dev/null
+          wait_for_webui
+          wait_for_log "installed (from cache)" 120 \
+            || fail "the second start did not install libdvdcss from the cache"
+          docker exec "$name" sh -c 'ldconfig -p | grep -q "libdvdcss\.so\.2"' \
+            || fail "libdvdcss.so.2 is not loadable after the cached install"
+          docker rm -f "$name" >/dev/null
+
+          echo "✅ libdvdcss gate passed on ${{ matrix.arch }}"
+
       # CVE scan of the locally-loaded smoke image. Report-only: exit-code 0 so
       # a HIGH/CRITICAL finding never blocks the build — results land in the
       # repo's Security tab. ignore-unfixed hides CVEs with no upstream fix.

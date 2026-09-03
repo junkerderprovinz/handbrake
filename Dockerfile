@@ -363,8 +363,10 @@ ENV ATTACHED_DEVICES_PERMS="/dev/sr*"
 
 # Opt-in CSS decryption for retail DVDs. Off by default: libdvdcss is not shipped
 # here and is not in the Ubuntu archive. Set INSTALL_LIBDVDCSS=true and the
-# init-handbrake-libdvdcss oneshot BUILDS it on first start via libdvd-pkg,
-# Debian's own mechanism for exactly this, and caches the result under /config.
+# init-handbrake-libdvdcss oneshot fetches the release tarball from VideoLAN's
+# own mirror, checks it against a checksum pinned in that script, COMPILES it on
+# this machine and caches the result under /config. Roughly 15 seconds on a first
+# start, about a second on every one after that.
 # Whether using it is lawful depends on where you are, which is why it is a switch
 # the operator flips rather than something the image ships. See README section 12.
 ENV INSTALL_LIBDVDCSS=false

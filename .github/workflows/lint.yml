@@ -55,6 +55,29 @@ jobs:
 
           echo "All scripts passed shellcheck."
 
+      # Every script above is 644 in git and gets its executable bit from a
+      # single chmod in the Dockerfile. The two lists were maintained by hand and
+      # independently of each other, and in v1.1.0 a new s6 service was added to
+      # one but not the other: s6 refused it with exit 126 and the WebUI never
+      # came up. This closes that gap.
+      - name: Every shipped script is in the Dockerfile's chmod list
+        run: |
+          set -euo pipefail
+
+          sed -n '/^RUN chmod +x/,/^$/p' Dockerfile \
+            | tr -d '\\' | tr -d ' \t' | grep '^/' | sort -u > /tmp/chmod-list
+
+          find rootfs -type f \( -name '*.sh' -o -name 'run' -o -name 'autostart' \) \
+            | sed 's|^rootfs||' | sort -u > /tmp/shipped
+
+          # Two-way: a shipped script missing from the list boots to exit 126,
+          # and a stale list entry breaks the build with "No such file".
+          if ! diff -u /tmp/chmod-list /tmp/shipped; then
+            echo "::error file=Dockerfile::the chmod +x list and the shipped scripts have drifted apart (- list, + on disk)"
+            exit 1
+          fi
+          echo "Every shipped script is chmod +x'd by the Dockerfile."
+
   xml-validate:
     name: XML Validation
     runs-on: ubuntu-latest

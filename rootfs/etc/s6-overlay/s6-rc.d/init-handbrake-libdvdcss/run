@@ -3,79 +3,157 @@
 # -----------------------------------------------------------------------------
 # init-handbrake-libdvdcss — opt-in CSS decryption for retail DVDs
 # -----------------------------------------------------------------------------
-# Off unless INSTALL_LIBDVDCSS=true. Without it HandBrake reads the unencrypted
-# IFO structure of a commercial disc, reports "Scanning title 1 of 1", and ends
-# at "No Title Found" — the drive and the /dev/sr0 wiring are fine, there is just
-# nothing in the image that can decrypt the payload (issue #2).
+# Off unless INSTALL_LIBDVDCSS=true. Without it HandBrake cannot decrypt a
+# commercial disc: libdvdread parses the unencrypted IFO structure, but the
+# payload needs libdvdcss, which this image does not ship and which is not in
+# the Ubuntu archive.
 #
-# libdvdcss is NOT shipped in the image and is not in the Ubuntu archive. This
-# uses libdvd-pkg, Debian's and Ubuntu's own answer to that: the package does not
-# contain the library, it fetches the source and BUILDS it here, on this machine,
-# when the operator asks for it. That is the difference between distributing a
-# decryptor and enabling one, and it is why the switch is opt-in and default off.
+# The library is NOT shipped here. This downloads the release tarball from
+# VideoLAN's own mirror, checks it against a checksum pinned in this file, and
+# compiles it on this machine when the operator asks for it. That is the
+# difference between distributing a decryptor and enabling one, and it is why
+# the switch is opt-in and default off.
 #
 # Whether using it is lawful depends on where you are. That decision belongs to
 # whoever flips the switch, which is why nothing here happens on its own.
 #
-# The built .deb is cached under /config so the build runs once rather than on
+# An earlier version used libdvd-pkg. That package fetches its source from
+# code.videolan.org, which now answers with a bot-protection page instead of the
+# archive, so its checksum check fails and the build never completes. The
+# release mirror used here is unaffected.
+#
+# The install tree is cached under /config so the build runs once rather than on
 # every container start.
+#
+# Deliberately no `set -e`: this oneshot runs before init-config-end, so a
+# non-zero exit means the WebUI never comes up. Every step is checked by hand
+# and every path ends in exit 0.
 # -----------------------------------------------------------------------------
-set -e
+
+LIBDVDCSS_VERSION="1.5.0"
+# sha256 of libdvdcss-1.5.0.tar.xz as published by VideoLAN next to the tarball.
+# Pinned here on purpose: a checksum fetched from the same server it guards
+# proves nothing. Bump both values together when moving to a new release.
+LIBDVDCSS_SHA256="529463e4d1befef82e5c6e470db7661a2db0343e092a2fb0d6c037cab8a5c399"
+MIRROR="https://download.videolan.org/pub/videolan/libdvdcss/${LIBDVDCSS_VERSION}"
+TARBALL="libdvdcss-${LIBDVDCSS_VERSION}.tar.xz"
 
 log() { echo "[init-handbrake-libdvdcss] $*"; }
+
+# Runs a command, prefixes its output into the container log and returns the
+# REAL exit status. `cmd | sed` would return sed's status instead, which is how
+# the previous version swallowed every apt and dpkg failure it meant to catch.
+run_logged() {
+    local out rc=0
+    out="$(mktemp)"
+    "$@" > "${out}" 2>&1 || rc=$?
+    sed 's/^/[init-handbrake-libdvdcss] /' "${out}"
+    rm -f "${out}"
+    return "${rc}"
+}
+
+have_lib() { ldconfig -p 2>/dev/null | grep -q 'libdvdcss\.so\.2'; }
 
 case "${INSTALL_LIBDVDCSS,,}" in
     true|yes|1|on) ;;
     *) exit 0 ;;
 esac
 
-# Already present from a previous start? Nothing to do.
-if ldconfig -p 2>/dev/null | grep -q 'libdvdcss'; then
-    log "libdvdcss already installed, nothing to do"
+if have_lib; then
+    log "libdvdcss is already present, nothing to do"
     exit 0
 fi
 
-CACHE="/config/handbrake/libdvdcss"
-mkdir -p "${CACHE}"
+ARCH="$(dpkg --print-architecture 2>/dev/null || echo unknown)"
+CACHE="/config/handbrake/libdvdcss/${ARCH}"
+BUNDLE="${CACHE}/libdvdcss-${LIBDVDCSS_VERSION}.tar.gz"
 
-# A cached .deb from an earlier build: install it and skip the network entirely.
-if compgen -G "${CACHE}/libdvdcss2_*.deb" > /dev/null; then
-    log "installing libdvdcss from the cached build in ${CACHE}"
-    if dpkg -i "${CACHE}"/libdvdcss2_*.deb 2>&1 | sed 's/^/[init-handbrake-libdvdcss] /'; then
-        ldconfig
-        log "done (cached)"
+if ! mkdir -p "${CACHE}" 2>/dev/null; then
+    log "ERROR: cannot create ${CACHE}, continuing without libdvdcss"
+    exit 0
+fi
+
+# -- 1) A build from an earlier start: unpack it and skip the network entirely.
+if [ -f "${BUNDLE}" ]; then
+    log "installing libdvdcss ${LIBDVDCSS_VERSION} from the cached build in ${CACHE}"
+    if run_logged tar -xzf "${BUNDLE}" -C / && run_logged ldconfig && have_lib; then
+        log "libdvdcss ${LIBDVDCSS_VERSION} is installed (from cache)"
         exit 0
     fi
-    log "cached package would not install, rebuilding"
+    log "the cached build would not install, discarding it and building again"
+    rm -f "${BUNDLE}"
 fi
 
-log "INSTALL_LIBDVDCSS is set: building libdvdcss via libdvd-pkg"
-log "this needs network access and takes a minute; it runs once and is then cached"
+# -- 2) Build tools. gcc, make, tar and curl are already in the image.
+log "INSTALL_LIBDVDCSS is set and nothing is cached: building libdvdcss ${LIBDVDCSS_VERSION}"
+log "this downloads the source and compiles it once, then caches the result in ${CACHE}"
 
 export DEBIAN_FRONTEND=noninteractive
-# libdvd-pkg asks a debconf question on install and would otherwise stall the boot.
-echo 'libdvd-pkg libdvd-pkg/build boolean true' | debconf-set-selections
-echo 'libdvd-pkg libdvd-pkg/post-invoke_hook-install boolean false' | debconf-set-selections
-
-if ! apt-get update -qq; then
-    log "ERROR: apt-get update failed, leaving the container without libdvdcss"
-    exit 0   # a failed opt-in must not stop HandBrake from starting
-fi
-if ! apt-get install -y --no-install-recommends libdvd-pkg 2>&1 | sed 's/^/[init-handbrake-libdvdcss] /'; then
-    log "ERROR: could not install libdvd-pkg, continuing without libdvdcss"
+if ! run_logged timeout 300 apt-get update -qq; then
+    log "ERROR: apt-get update failed, continuing without libdvdcss"
     exit 0
 fi
-if ! dpkg-reconfigure -f noninteractive libdvd-pkg 2>&1 | sed 's/^/[init-handbrake-libdvdcss] /'; then
-    log "ERROR: the libdvdcss build failed, continuing without it"
+if ! run_logged timeout 900 apt-get install -y --no-install-recommends \
+        build-essential meson ninja-build pkg-config xz-utils; then
+    log "ERROR: could not install the build tools, continuing without libdvdcss"
     exit 0
 fi
 
-# Keep the built package so the next start does not rebuild it.
-cp -f /usr/src/libdvd-pkg/libdvdcss2_*.deb "${CACHE}/" 2>/dev/null || true
-ldconfig
+WORK="$(mktemp -d)"
+if [ -z "${WORK}" ] || [ ! -d "${WORK}" ]; then
+    log "ERROR: could not create a work directory, continuing without libdvdcss"
+    exit 0
+fi
+give_up() { log "$*"; rm -rf "${WORK}"; exit 0; }
 
-if ldconfig -p 2>/dev/null | grep -q 'libdvdcss'; then
-    log "libdvdcss is installed; encrypted DVDs should scan now"
+# -- 3) Source, from VideoLAN's release mirror, checked against the pinned sum.
+if ! run_logged timeout 300 curl -fsSL --retry 3 --retry-delay 2 \
+        -o "${WORK}/${TARBALL}" "${MIRROR}/${TARBALL}"; then
+    give_up "ERROR: could not download ${MIRROR}/${TARBALL}, continuing without libdvdcss"
+fi
+
+GOT="$(sha256sum "${WORK}/${TARBALL}" 2>/dev/null | cut -d' ' -f1)"
+if [ "${GOT}" != "${LIBDVDCSS_SHA256}" ]; then
+    log "ERROR: checksum mismatch for ${TARBALL}"
+    log "  expected ${LIBDVDCSS_SHA256}"
+    log "  got      ${GOT:-nothing}"
+    give_up "refusing to build from it, continuing without libdvdcss"
+fi
+
+if ! run_logged tar -xJf "${WORK}/${TARBALL}" -C "${WORK}"; then
+    give_up "ERROR: could not unpack ${TARBALL}, continuing without libdvdcss"
+fi
+
+# -- 4) Compile, into a staging tree so the same bytes can be cached.
+SRC="${WORK}/libdvdcss-${LIBDVDCSS_VERSION}"
+if ! run_logged timeout 300 meson setup "${SRC}/_build" "${SRC}" \
+        --prefix=/usr/local --buildtype=release; then
+    give_up "ERROR: meson could not configure the build, continuing without libdvdcss"
+fi
+if ! run_logged timeout 900 ninja -C "${SRC}/_build"; then
+    give_up "ERROR: the libdvdcss build failed, continuing without libdvdcss"
+fi
+if ! run_logged env DESTDIR="${WORK}/stage" ninja -C "${SRC}/_build" install; then
+    give_up "ERROR: the build finished but would not install, continuing without libdvdcss"
+fi
+
+# -- 5) Cache it before installing, so a later start needs no network at all.
+if run_logged tar -czf "${BUNDLE}" -C "${WORK}/stage" .; then
+    chown -R "${PUID:-911}:${PGID:-911}" /config/handbrake/libdvdcss 2>/dev/null || true
 else
-    log "WARNING: the build reported success but libdvdcss is not loadable"
+    log "WARNING: could not cache the build; the next start will build it again"
 fi
+
+if ! run_logged cp -a "${WORK}/stage/." /; then
+    give_up "ERROR: could not install the built library, continuing without libdvdcss"
+fi
+run_logged ldconfig || true
+rm -rf "${WORK}"
+
+# -- 6) Say what actually happened, not what was attempted.
+if have_lib; then
+    log "libdvdcss ${LIBDVDCSS_VERSION} is installed; encrypted DVDs can be scanned now"
+else
+    log "ERROR: the build finished but libdvdcss.so.2 is not loadable, continuing without it"
+fi
+exit 0
