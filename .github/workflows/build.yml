@@ -713,36 +713,27 @@ jobs:
 
       # Mirror the GitHub README to the Docker Hub repo's Overview.
       #
-      # This step was removed once, on the conclusion that 2FA makes the action
-      # unusable: it logs in against Docker Hub's legacy /v2/users/login/, which
-      # does refuse the account password outright when 2FA is on. That half is
-      # true. The conclusion was not: the same action, on the same account, was
-      # run manually against featherdrop on 2026-09-05 and succeeded. Three
-      # repos whose DOCKERHUB_PASSWORD was set on 2026-06-30 still sync fine,
-      # and the only two that fail with 401 are the two whose secret was set
-      # later. So the working credential is not a password at all, it is a
-      # Docker Hub access token, which is exactly what gets past 2FA.
-      #
-      # DOCKERHUB_PASSWORD must therefore hold an access token with read, write
-      # and delete scope. The registry push token in DOCKERHUB_TOKEN is not
-      # enough: it authenticates but cannot edit a description, and answers 403
-      # rather than 401. The step stays gated on the secret being present and
-      # never fatal, so an unset or wrong credential costs a description, not a
-      # release.
+      # This uses DOCKERHUB_TOKEN, the same access token the push above uses.
+      # It used to use a separate DOCKERHUB_PASSWORD, on the belief that a push
+      # token cannot edit a description. That was measured wrong on 2026-09-05:
+      # an access token with read, write and delete scope edits it fine, while
+      # the account password is refused outright with 401, because Docker Hub's
+      # legacy login endpoint rejects a password once 2FA is on. One secret,
+      # and the one that actually works.
       - name: Docker Hub description sync ready?
         id: dhdesc
         if: ${{ vars.DOCKERHUB_USERNAME != '' && github.event_name != 'pull_request' }}
         env:
-          PW: ${{ secrets.DOCKERHUB_PASSWORD }}
+          PW: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          if [ -n "$PW" ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "DOCKERHUB_PASSWORD not set — skipping Docker Hub description sync"; echo "go=false" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$PW" ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "DOCKERHUB_TOKEN not set — skipping Docker Hub description sync"; echo "go=false" >> "$GITHUB_OUTPUT"; fi
       - name: Sync README to Docker Hub
         if: ${{ steps.dhdesc.outputs.go == 'true' }}
         continue-on-error: true
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ vars.DOCKERHUB_USERNAME }}/handbrake
           # Docker Hub caps this at 100 characters, so it is the repo's own
           # description trimmed to fit rather than a second, drifting blurb.
