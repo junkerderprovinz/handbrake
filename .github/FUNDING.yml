@@ -1,3 +1,7 @@
-# These are supported funding model platforms
-
-buy_me_a_coffee: junkerderprovinz
+# GitHub Sponsors only. The other ways live in the README, as a row of all
+# three, and a second place holding the same links is a place where they go
+# stale.
+#
+# The commented-out platforms from GitHub's template are deliberately gone: a
+# file full of services nobody uses hides the one line that matters.
+github: [junkerderprovinz]
