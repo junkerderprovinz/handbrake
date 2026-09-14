@@ -185,7 +185,7 @@ log on the very first start.
 | Variable | Default | Description |
 |---|---|---|
 | `PUID` / `PGID` | `911` | User and group the container runs as (Unraid: `99` / `100`) |
-| `UMASK` | `022` | File-mode mask for everything the container creates |
+| `UMASK` | `000` | File-mode mask for everything the container creates. Keeps new files writable for other containers on the same shares |
 | `TZ` | `Etc/UTC` | Container timezone |
 | `LANG` | `en_US.UTF-8` | Locale, also drives HandBrake's UI language |
 | `HANDBRAKE_THEME` | `dark` | `dark` or `light` — see [Dark Mode](#7-dark-mode) |
