@@ -40,6 +40,22 @@ LABEL org.opencontainers.image.vendor="junkerderprovinz"
 # PASSWORD/CUSTOM_USER before nginx starts, so Unraid's blank template fields
 # cannot turn into a login prompt. A real CUSTOM_USER/PASSWORD still enables
 # nginx basic auth on the single reachable entry point.
+#
+# NO MAX_RES DEFAULT HERE, ON PURPOSE. The virtual screen is the container's
+# biggest single memory item: the X server allocates the whole framebuffer up
+# front, about 4 bytes per pixel, so the base default of 15360x8640 is 530 MB
+# before anything else runs. The full range has to stay available, so the
+# choice belongs to the user: the Unraid template offers a preset dropdown
+# (MAX_RES) plus a free field (MAX_RES_CUSTOM) whose value wins, and
+# init-screen-size settles the two before svc-xorg reads them.
+#
+# NO RESTART_APP EITHER, and that IS the deliberate difference from the
+# sibling Selkies images. They enable the base image's svc-watchdog to bring
+# the application back when the user closes it; this image has supervised the
+# GUI itself since day one, in rootfs/defaults/autostart, with a fast-exit
+# counter and a capped backoff the watchdog does not have. Turning both on
+# would have two supervisors racing for the same process. If the local loop is
+# ever removed, set RESTART_APP=true here and drop the `exec` in the autostart.
 ENV TITLE="HandBrake" \
     SELKIES_UI_TITLE="HandBrake" \
     SELKIES_ENABLE_BASIC_AUTH="false"
@@ -181,6 +197,21 @@ RUN set -eux; \
 # ---------------------------------------------------------------------------
 COPY rootfs/ /
 
+# ---------------------------------------------------------------------------
+# Assert the X service we hook the screen size onto is really the base's
+# ---------------------------------------------------------------------------
+# rootfs/ ships svc-xorg/dependencies.d/init-screen-size so our oneshot settles
+# MAX_RES before Xvfb reads it. If a base bump ever renames that service, the
+# COPY above would CREATE /etc/s6-overlay/s6-rc.d/svc-xorg as a service
+# directory with a dependency and no `type` file. s6-rc-compile then aborts in
+# stage 2 and EVERY container exits at boot, while the build itself stays
+# green, so the failure would only show up in users' logs. Checking for the
+# base's own `type` file turns that into a build error instead.
+RUN set -eux; \
+    t=/etc/s6-overlay/s6-rc.d/svc-xorg/type; \
+    [ -f "$t" ] || { echo "ERROR: $t missing — the selkies base renamed or dropped svc-xorg; re-point rootfs/etc/s6-overlay/s6-rc.d/svc-xorg/dependencies.d/init-screen-size at the new service"; exit 1; }; \
+    echo "handbrake: screen-size oneshot ordered before svc-xorg"
+
 # Init-log banner: single source at .github/assets/banner-raw.txt. Strip
 # Windows CR (tr is byte-safe) so the block characters render cleanly no matter
 # which editor last touched the file.
@@ -221,6 +252,8 @@ RUN set -eux; \
 # non-executable is a second reminder that a template is not a live hook.
 RUN chmod +x \
     /usr/local/bin/print-banner.sh \
+    /usr/local/bin/selkies-resolution.sh \
+    /etc/s6-overlay/s6-rc.d/init-screen-size/run \
     /usr/local/bin/handbrake-theme.sh \
     /usr/local/bin/handbrake-gpu.sh \
     /usr/local/bin/handbrake-watch.sh \

@@ -184,6 +184,8 @@ log on the very first start.
 
 | Variable | Default | Description |
 |---|---|---|
+| `MAX_RES` | `15360x8640` | Virtual screen the container serves, picked from a dropdown of presets in the template. This is where most of the container's memory goes, see below. |
+| `MAX_RES_CUSTOM` | *(empty)* | Your own `WIDTHxHEIGHT` instead of a preset, e.g. `3440x1440`. Wins over `MAX_RES` when set. |
 | `PUID` / `PGID` | `911` | User and group the container runs as (Unraid: `99` / `100`) |
 | `UMASK` | `000` | File-mode mask for everything the container creates. Keeps new files writable for other containers on the same shares |
 | `TZ` | `Etc/UTC` | Container timezone |
@@ -196,6 +198,17 @@ log on the very first start.
 | `CUSTOM_PORT` / `CUSTOM_HTTPS_PORT` | `3000` / `3001` | Internal WebUI ports |
 | `INSTALL_LIBDVDCSS` | `false` | `true` builds `libdvdcss` on first start for encrypted DVDs — see [Optical Drives](#12-optical-drives) |
 
+### Screen size and memory use
+
+The X server reserves its whole virtual framebuffer up front, at roughly **4 bytes per pixel**, no
+matter how big your browser window actually is. At the full `15360x8640` that is 530 MB before
+anything else runs, which is most of what this container uses at idle.
+
+The image ships that full size, so every resolution stays available. If you would rather have the
+RAM back, pick a smaller screen in the template: the dropdown lists sizes from 1080p upwards with
+the cost of each, and the free field next to it takes anything not in the list. A value that is not
+a `WIDTHxHEIGHT` pair is ignored with a note in the container log rather than stopping the
+container. Above the size you picked, the picture is scaled to your window rather than cut off.
 <br>
 
 ## 6. Automated Watch-Folder Conversion
