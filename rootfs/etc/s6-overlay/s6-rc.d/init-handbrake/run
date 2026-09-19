@@ -1,13 +1,10 @@
 #!/usr/bin/with-contenv bash
 # shellcheck shell=bash
-# -----------------------------------------------------------------------------
-# init-handbrake — config bootstrap, theme, mounts and the GPU seam
-# -----------------------------------------------------------------------------
-# Runs as an s6-rc oneshot AFTER init-selkies-config (dependencies.d), because
-# that base oneshot rewrites parts of /config and restores /etc/xdg/openbox/rc.xml
-# from a .bak on EVERY start. Anything written before it can be silently undone —
-# which is exactly why this repo uses no /etc/cont-init.d scripts at all.
-# -----------------------------------------------------------------------------
+# Config bootstrap, theme, mounts and the GPU seam. Ordered after the base's
+# init-selkies-config, which rewrites parts of /config and restores
+# /etc/xdg/openbox/rc.xml from a .bak on every start, so anything written
+# earlier could be undone. That is also why this repo has no cont-init.d
+# scripts.
 set -e
 
 log() { echo "[init-handbrake] $*"; }
@@ -18,7 +15,6 @@ set_env() {
 
 mkdir -p /run/s6/container_environment /run/handbrake
 
-# -- 1) Directories -----------------------------------------------------------
 CONFIG_HOME="/config/.config"
 mkdir -p "${CONFIG_HOME}/openbox" \
          "${CONFIG_HOME}/ghb" \
@@ -27,19 +23,14 @@ mkdir -p "${CONFIG_HOME}/openbox" \
          "/config/.profile.d" \
          "/config/handbrake/watch-state"
 
-# -- 2) openbox autostart: ALWAYS refreshed from the image --------------------
 cp -af /defaults/autostart "${CONFIG_HOME}/openbox/autostart"
 chmod 0755 "${CONFIG_HOME}/openbox/autostart"
 log "autostart synced from /defaults/autostart"
 
-# -- 2b) openbox window rule: no title bar on ghb's main window ---------------
-# Kiosk look, same approach as krusader and jdownloader. ghb's WM_CLASS is
-# "fr.handbrake.ghb" (its GTK4 application ID, confirmed live via `xprop`, not
-# the auto-capitalized "Ghb" a plain binary name would get). Scoped to
-# type="normal" like krusader (not jdownloader's WM-wide class="*"), because
-# ghb's dialogs (Preferences, Queue, Activity Log, Open Source) share the same
-# WM_CLASS as the main window and should keep their decorations and natural
-# size — a class-only rule would force-maximize and de-decorate those too.
+# No title bar on ghb's main window, as in krusader and jdownloader. ghb's
+# WM_CLASS is its GTK4 application id "fr.handbrake.ghb" (checked with xprop),
+# not "Ghb". The rule is limited to type="normal" because ghb's dialogs share
+# that WM_CLASS and should keep their decorations and natural size.
 RC=/etc/xdg/openbox/rc.xml
 if [ -f "${RC}" ]; then
     python3 - "${RC}" <<'PYEOF' && log "openbox rc.xml: decor=no on ghb's main window" || log "openbox rc.xml patch failed (non-fatal)"
@@ -53,7 +44,6 @@ if 'class="fr.handbrake.ghb"' not in s and '</applications>' in s:
 PYEOF
 fi
 
-# -- 3) Theme (HandBrake's native GTK4 dark mode) -----------------------------
 /usr/local/bin/handbrake-theme.sh "${HANDBRAKE_THEME:-dark}" || log "theme hook failed (non-fatal)"
 
 # The desktop session is started by svc-de, which inherits the s6 container
@@ -66,35 +56,29 @@ fi
 # X11 is the mode the whole Selkies window pipeline is built on; pin the GDK
 # backend so a future base default of Wayland cannot silently change it.
 set_env GDK_BACKEND    "x11"
-# GTK4's default GSK renderer tries a hardware GL context. With GPU_VENDOR=nvidia
-# the NVIDIA container runtime injects its own libGL/libEGL into the image, and
-# GTK4 then intermittently negotiates a GL context against those against Xvfb's
-# purely-software X server, which is not the setup NVIDIA's OpenGL implementation
-# expects: the context creation succeeds but the window renders solid black.
-# Verified live (real GPU-accelerated boot) — cairo (software 2D) has no such
-# issue and costs nothing, since this only draws ghb's UI chrome, never the
-# transcode itself (that goes through NVENC directly, not through this window).
+# GTK4's default GSK renderer wants a hardware GL context. With GPU_VENDOR=nvidia
+# the NVIDIA runtime injects its own libGL/libEGL, GTK4 then sometimes builds a
+# context on them against Xvfb's software X server, and the window renders
+# solid black. cairo has no such issue and only draws ghb's UI; the transcode
+# goes through NVENC, not through this window.
 set_env GSK_RENDERER   "cairo"
 set_env XDG_CONFIG_HOME "/config/.config"
 set_env XDG_DATA_HOME   "/config/.local/share"
 set_env XDG_CACHE_HOME  "/config/.cache"
 
-# -- 4) GPU seam --------------------------------------------------------------
-# GPU_VENDOR is none | nvidia | intel | amd. The watch daemon never needs to
-# know about vendors itself — handbrake-gpu.sh resolves the vendor into the
-# extra HandBrakeCLI arguments written to /run/handbrake/gpu-args.
+# handbrake-gpu.sh turns GPU_VENDOR into extra HandBrakeCLI arguments, so the
+# watch daemon never has to know about vendors.
 if /usr/local/bin/handbrake-gpu.sh "${GPU_VENDOR:-none}" > /run/handbrake/gpu-args; then
     log "gpu-args: '$(cat /run/handbrake/gpu-args)' (vendor $(cat /run/handbrake/gpu-vendor 2>/dev/null || echo none))"
 else
     : > /run/handbrake/gpu-args
-    log "WARNING: handbrake-gpu.sh failed — continuing with software encoding"
+    log "WARNING: handbrake-gpu.sh failed, continuing with software encoding"
 fi
 chmod 0644 /run/handbrake/gpu-args
 
-# -- 5) Mount points: ownership + a LOUD warning when they are not writable ---
-# Docker creates a MISSING host path as root:root, which the container user
-# cannot write — conversions would then fail on every single file. chown only
-# the TOP level (no -R) so we never traverse a large media share.
+# Docker creates a missing host path as root:root, which the container user
+# cannot write, so every conversion would fail. Only the top level is chowned,
+# never a whole media share.
 check_mount() {
     local dir="$1" role="$2"
     [ -d "${dir}" ] || return 0
@@ -115,15 +99,12 @@ for w in /watch /watch2 /watch3 /watch4 /watch5; do
 done
 check_mount "${AUTOMATED_CONVERSION_OUTPUT_DIR:-/output}" "output folder"
 
-# -- 6) GUI manual-conversion hook (HandBrake's own "Send file to") -----------
-# ghb's own SendFileTo/SendFileToTarget preferences call a script with the
-# finished file after a successful manual encode (confirmed against the
-# 1.11.2 GTK source, gtk/src/callbacks.c). Its "Preferences" object is large
-# and undocumented outside that source, so this only ever PATCHES an existing
-# preferences.json with jq — writing a minimal one here would replace ghb's
-# real defaults instead of extending them. On the very first boot the file
-# does not exist yet (ghb has never run), so this activates from the second
-# boot onward; nothing here blocks the GUI from starting normally either way.
+# ghb's "Send file to" preferences (SendFileTo, SendFileToTarget) call a script
+# with the finished file after a successful manual encode (gtk/src/callbacks.c
+# in the 1.11.2 source). The "Preferences" object is large and undocumented,
+# so an existing preferences.json is patched with jq rather than replaced by a
+# minimal one. ghb writes the file on its first run, so the hook is wired from
+# the second start on.
 GHB_PREFS="/config/.config/ghb/preferences.json"
 GUI_HOOK_TARGET="/usr/local/bin/handbrake-gui-hook.sh"
 if [ -f "${GHB_PREFS}" ]; then
@@ -138,16 +119,14 @@ if [ -f "${GHB_PREFS}" ]; then
         log "wired the manual-conversion GUI hook into ghb's preferences"
     else
         rm -f "${GHB_PREFS}.tmp" 2>/dev/null || true
-        log "WARNING: could not patch ${GHB_PREFS} with jq — manual-conversion GUI hook not wired this start"
+        log "WARNING: could not patch ${GHB_PREFS} with jq, manual-conversion GUI hook not wired this start"
     fi
 else
-    log "ghb preferences not created yet — manual-conversion GUI hook will be wired from the next start"
+    log "ghb preferences not created yet, manual-conversion GUI hook will be wired from the next start"
 fi
 
-# -- 7) Ownership of everything we just created -------------------------------
 chown -R "${PUID:-911}:${PGID:-911}" /config/.config /config/.profile.d /config/handbrake 2>/dev/null || true
 
-# -- 8) Diagnostics -----------------------------------------------------------
 if [ -f /etc/handbrake-build ]; then
     BUILD_SHA=$(grep '^sha='  /etc/handbrake-build | cut -d= -f2)
     BUILD_DATE=$(grep '^date=' /etc/handbrake-build | cut -d= -f2)

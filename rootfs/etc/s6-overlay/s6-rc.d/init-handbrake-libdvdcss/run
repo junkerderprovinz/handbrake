@@ -1,39 +1,30 @@
 #!/usr/bin/with-contenv bash
 # shellcheck shell=bash
-# -----------------------------------------------------------------------------
-# init-handbrake-libdvdcss — opt-in CSS decryption for retail DVDs
-# -----------------------------------------------------------------------------
-# Off unless INSTALL_LIBDVDCSS=true. Without it HandBrake cannot decrypt a
-# commercial disc: libdvdread parses the unencrypted IFO structure, but the
+# Opt-in CSS decryption for retail DVDs, off unless INSTALL_LIBDVDCSS=true.
+# libdvdread parses a commercial disc's unencrypted IFO structure, but the
 # payload needs libdvdcss, which this image does not ship and which is not in
 # the Ubuntu archive.
 #
-# The library is NOT shipped here. This downloads the release tarball from
-# VideoLAN's own mirror, checks it against a checksum pinned in this file, and
-# compiles it on this machine when the operator asks for it. That is the
-# difference between distributing a decryptor and enabling one, and it is why
-# the switch is opt-in and default off.
+# On request this downloads the release tarball from VideoLAN's own mirror,
+# checks it against a checksum pinned here and compiles it on this machine,
+# which is the difference between distributing a decryptor and enabling one.
+# Whether using it is lawful depends on where you are, so nothing happens until
+# the operator flips the switch.
 #
-# Whether using it is lawful depends on where you are. That decision belongs to
-# whoever flips the switch, which is why nothing here happens on its own.
+# libdvd-pkg is not used: it fetches from code.videolan.org, which answers with
+# a bot-protection page instead of the archive, so its checksum check fails.
+# The release mirror is not affected.
 #
-# An earlier version used libdvd-pkg. That package fetches its source from
-# code.videolan.org, which now answers with a bot-protection page instead of the
-# archive, so its checksum check fails and the build never completes. The
-# release mirror used here is unaffected.
+# The build is cached under /config, so it runs once rather than on every start.
 #
-# The install tree is cached under /config so the build runs once rather than on
-# every container start.
-#
-# Deliberately no `set -e`: this oneshot runs before init-config-end, so a
-# non-zero exit means the WebUI never comes up. Every step is checked by hand
-# and every path ends in exit 0.
-# -----------------------------------------------------------------------------
+# No `set -e`: this oneshot runs before init-config-end, where a non-zero exit
+# keeps the WebUI from ever coming up. Every step is checked by hand and every
+# path ends in exit 0.
 
 LIBDVDCSS_VERSION="1.5.0"
 # sha256 of libdvdcss-1.5.0.tar.xz as published by VideoLAN next to the tarball.
-# Pinned here on purpose: a checksum fetched from the same server it guards
-# proves nothing. Bump both values together when moving to a new release.
+# Pinned here because a checksum fetched from the server it guards proves
+# nothing. Bump both values together when moving to a new release.
 LIBDVDCSS_SHA256="529463e4d1befef82e5c6e470db7661a2db0343e092a2fb0d6c037cab8a5c399"
 MIRROR="https://download.videolan.org/pub/videolan/libdvdcss/${LIBDVDCSS_VERSION}"
 TARBALL="libdvdcss-${LIBDVDCSS_VERSION}.tar.xz"
@@ -41,8 +32,7 @@ TARBALL="libdvdcss-${LIBDVDCSS_VERSION}.tar.xz"
 log() { echo "[init-handbrake-libdvdcss] $*"; }
 
 # Runs a command, prefixes its output into the container log and returns the
-# REAL exit status. `cmd | sed` would return sed's status instead, which is how
-# the previous version swallowed every apt and dpkg failure it meant to catch.
+# command's own exit status, which `cmd | sed` would replace with sed's.
 run_logged() {
     local out rc=0
     out="$(mktemp)"
@@ -73,7 +63,7 @@ if ! mkdir -p "${CACHE}" 2>/dev/null; then
     exit 0
 fi
 
-# -- 1) A build from an earlier start: unpack it and skip the network entirely.
+# A build from an earlier start needs no network at all.
 if [ -f "${BUNDLE}" ]; then
     log "installing libdvdcss ${LIBDVDCSS_VERSION} from the cached build in ${CACHE}"
     if run_logged tar -xzf "${BUNDLE}" -C / && run_logged ldconfig && have_lib; then
@@ -84,7 +74,6 @@ if [ -f "${BUNDLE}" ]; then
     rm -f "${BUNDLE}"
 fi
 
-# -- 2) Build tools. gcc, make, tar and curl are already in the image.
 log "INSTALL_LIBDVDCSS is set and nothing is cached: building libdvdcss ${LIBDVDCSS_VERSION}"
 log "this downloads the source and compiles it once, then caches the result in ${CACHE}"
 
@@ -106,7 +95,6 @@ if [ -z "${WORK}" ] || [ ! -d "${WORK}" ]; then
 fi
 give_up() { log "$*"; rm -rf "${WORK}"; exit 0; }
 
-# -- 3) Source, from VideoLAN's release mirror, checked against the pinned sum.
 if ! run_logged timeout 300 curl -fsSL --retry 3 --retry-delay 2 \
         -o "${WORK}/${TARBALL}" "${MIRROR}/${TARBALL}"; then
     give_up "ERROR: could not download ${MIRROR}/${TARBALL}, continuing without libdvdcss"
@@ -124,7 +112,7 @@ if ! run_logged tar -xJf "${WORK}/${TARBALL}" -C "${WORK}"; then
     give_up "ERROR: could not unpack ${TARBALL}, continuing without libdvdcss"
 fi
 
-# -- 4) Compile, into a staging tree so the same bytes can be cached.
+# Built into a staging tree so the same bytes can be cached and installed.
 SRC="${WORK}/libdvdcss-${LIBDVDCSS_VERSION}"
 if ! run_logged timeout 300 meson setup "${SRC}/_build" "${SRC}" \
         --prefix=/usr/local --buildtype=release; then
@@ -137,7 +125,6 @@ if ! run_logged env DESTDIR="${WORK}/stage" ninja -C "${SRC}/_build" install; th
     give_up "ERROR: the build finished but would not install, continuing without libdvdcss"
 fi
 
-# -- 5) Cache it before installing, so a later start needs no network at all.
 if run_logged tar -czf "${BUNDLE}" -C "${WORK}/stage" .; then
     chown -R "${PUID:-911}:${PGID:-911}" /config/handbrake/libdvdcss 2>/dev/null || true
 else
@@ -150,7 +137,6 @@ fi
 run_logged ldconfig || true
 rm -rf "${WORK}"
 
-# -- 6) Say what actually happened, not what was attempted.
 if have_lib; then
     log "libdvdcss ${LIBDVDCSS_VERSION} is installed; encrypted DVDs can be scanned now"
 else

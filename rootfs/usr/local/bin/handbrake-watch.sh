@@ -1,25 +1,15 @@
 #!/usr/bin/env bash
-# ---------------------------------------------------------------------------
-# handbrake-watch.sh — automated watch-folder conversion daemon
-# ---------------------------------------------------------------------------
-# Polls one or more watch folders and converts every new video with
-# HandBrakeCLI. Variable names deliberately mirror jlesage/docker-handbrake so a
-# migrating user keeps their template values.
+# Watch-folder conversion daemon: polls the watch folders and converts every
+# new video with HandBrakeCLI. The variable names mirror jlesage/docker-handbrake
+# so a migrating user keeps their template values.
 #
-# DESIGN NOTES
-#   * Runs as abc (see svc-handbrake-watch/run), so every produced file gets the
-#     right ownership and the container UMASK without any chown afterwards.
-#   * QUIET WHEN IDLE. The poll loop logs nothing on an empty pass; only real
-#     events reach the container log. This is what keeps the "HANDBRAKE IS
-#     READY" banner as the last block of `docker logs` on an idle container.
-#   * A file is only picked up once it has been STABLE for
-#     AUTOMATED_CONVERSION_SOURCE_STABLE_TIME seconds (size+mtime unchanged
-#     between two passes), so a file still being copied in is never transcoded.
-#   * Every processed source is remembered by sha1(path)|size|mtime in
-#     done.list / failed.list. Re-copying or editing the source changes the key,
-#     so it is picked up again; an unchanged source is never re-processed.
-#   * Output is written to a hidden .partial sibling and renamed on success.
-# ---------------------------------------------------------------------------
+# Runs as abc (svc-handbrake-watch/run), so every file gets the right owner and
+# the container UMASK. An empty pass logs nothing, which keeps the READY banner
+# the last block of `docker logs` on an idle container. A file is picked up once
+# its size and mtime stayed the same for AUTOMATED_CONVERSION_SOURCE_STABLE_TIME
+# seconds, so a file still being copied in is left alone. Each processed source
+# is remembered as sha1(path)|size|mtime in done.list or failed.list, so a
+# changed source is converted again and an unchanged one never is.
 set -uo pipefail
 
 log() { echo "[handbrake-watch] $*"; }
@@ -31,7 +21,6 @@ truthy() {
     esac
 }
 
-# ---- configuration ---------------------------------------------------------
 PRESET="${AUTOMATED_CONVERSION_PRESET:-General/Very Fast 1080p30}"
 FORMAT="$(printf '%s' "${AUTOMATED_CONVERSION_FORMAT:-mp4}" | tr '[:upper:]' '[:lower:]')"
 OUTPUT_DIR="${AUTOMATED_CONVERSION_OUTPUT_DIR:-/output}"
@@ -66,32 +55,31 @@ if [ -n "${ACTIVE_HOURS_SETTING}" ]; then
             case "${ACTIVE_END}"   in *[!0-9]*) ACTIVE_END=bad ;; esac
             if [ "${ACTIVE_START}" = "bad" ] || [ "${ACTIVE_END}" = "bad" ] \
                || [ "${ACTIVE_START}" -gt 23 ] || [ "${ACTIVE_END}" -gt 23 ]; then
-                log "WARNING: AUTOMATED_CONVERSION_ACTIVE_HOURS='${ACTIVE_HOURS_SETTING}' must be two hours 0-23 separated by '-' (e.g. 22-06) — ignoring, conversion stays always active"
+                log "WARNING: AUTOMATED_CONVERSION_ACTIVE_HOURS='${ACTIVE_HOURS_SETTING}' must be two hours 0-23 separated by '-' (e.g. 22-06); ignoring it, conversion stays always active"
                 ACTIVE_START=-1
                 ACTIVE_END=-1
             fi
             ;;
         *)
-            log "WARNING: AUTOMATED_CONVERSION_ACTIVE_HOURS='${ACTIVE_HOURS_SETTING}' does not match HH-HH — ignoring, conversion stays always active"
+            log "WARNING: AUTOMATED_CONVERSION_ACTIVE_HOURS='${ACTIVE_HOURS_SETTING}' does not match HH-HH; ignoring it, conversion stays always active"
             ;;
     esac
 fi
 
-# Conversion hooks. Fixed path, same as jlesage/handbrake, so a migrating user's
-# scripts land where they already expect.
+# Same path as in jlesage's image, so a migrating user's hooks land where they
+# already expect them.
 HOOKS_DIR="/config/hooks"
 
-# Staging: an in-progress conversion is written here and only moved to its final
-# destination once HandBrakeCLI succeeded. Empty means "a hidden directory under
-# the output root", which is exactly what jlesage does. Point it at a fast local
-# disk (an Unraid cache pool, say) to keep the array out of the write path while
-# a transcode runs, then let the finished file land on the array.
+# A conversion is written here and moved to its destination once HandBrakeCLI
+# succeeded. Empty means a hidden directory under the output root, as in
+# jlesage's image. On a cache pool it keeps the array out of the write path
+# while a transcode runs.
 STAGING_DIR="${AUTOMATED_CONVERSION_STAGING_DIR:-}"
 [ -z "${STAGING_DIR}" ] && STAGING_DIR="${OUTPUT_DIR}/.handbrake-staging"
 
-# Short, stable tag for THIS container. Two instances may share a staging
-# directory or a watch folder, so every file we create carries our own tag: on
-# restart we may only clean up our own leftovers, never another live instance's.
+# A short, stable tag for this container. Two instances may share a staging
+# directory or a watch folder, so every file carries its creator's tag and a
+# restart cleans up only its own leftovers.
 INSTANCE="$(tr -cd 'a-zA-Z0-9' < /etc/hostname 2>/dev/null | head -c 12)"
 [ -z "${INSTANCE}" ] && INSTANCE="handbrake"
 
@@ -107,7 +95,7 @@ export HB_FORMAT="${FORMAT}"
 
 DEFAULT_VIDEO_EXTENSIONS="mkv mp4 m4v avi mov wmv flv webm mpg mpeg m2ts mts ts vob 3gp ogv divx asf rm rmvb iso"
 
-# Numeric guards — a hand-edited template value must not break the loop.
+# A hand-edited template value must not break the loop.
 for _var in MAX_WATCH_FOLDERS STABLE_TIME CHECK_INTERVAL NICE_LEVEL; do
     case "${!_var}" in
         ''|*[!0-9]*) printf -v "${_var}" '%s' "0" ;;
@@ -124,11 +112,10 @@ case "${FORMAT}" in
     webm)    MUX="av_webm" ;;
     *)
         MUX=""
-        log "WARNING: unknown AUTOMATED_CONVERSION_FORMAT='${FORMAT}' — letting the preset choose the container"
+        log "WARNING: unknown AUTOMATED_CONVERSION_FORMAT='${FORMAT}', letting the preset choose the container"
         ;;
 esac
 
-# Extension allow-list.
 EXT_SETTING="${AUTOMATED_CONVERSION_VIDEO_FILE_EXTENSIONS:-}"
 [ -z "${EXT_SETTING}" ] && EXT_SETTING="${DEFAULT_VIDEO_EXTENSIONS}"
 read -r -a VIDEO_EXTENSIONS <<< "$(printf '%s' "${EXT_SETTING}" | tr ',' ' ' | tr '[:upper:]' '[:lower:]')"
@@ -138,14 +125,13 @@ read -r -a VIDEO_EXTENSIONS <<< "$(printf '%s' "${EXT_SETTING}" | tr ',' ' ' | t
 read -r -a HB_GPU_ARGS <<< "$(cat /run/handbrake/gpu-args 2>/dev/null || true)"
 read -r -a HB_EXTRA_ARGS <<< "${AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS:-}"
 
-# ---- shutdown handling -----------------------------------------------------
 CURRENT_PARTIAL=""
 CURRENT_PID=""
 CURRENT_LOCK=""
 LOCK_WARNED=0
 
 cleanup() {
-    log "stop requested — shutting down"
+    log "stop requested, shutting down"
     if [ -n "${CURRENT_PID}" ] && kill -0 "${CURRENT_PID}" 2>/dev/null; then
         log "cancelling the running conversion (pid ${CURRENT_PID})"
         kill -TERM "${CURRENT_PID}" 2>/dev/null || true
@@ -160,7 +146,6 @@ cleanup() {
 }
 trap cleanup TERM INT
 
-# ---- helpers ---------------------------------------------------------------
 file_key() {
     local f="$1" sz mt hash
     sz="$(stat -c %s -- "${f}" 2>/dev/null || echo 0)"
@@ -217,26 +202,23 @@ in_active_window() {
 }
 
 staging_path() {
-    # $1 = final file name (stem.ext). Replaces Plan 1's partial_path(): the
-    # in-progress file now lives in STAGING_DIR instead of next to the finished
-    # output, so a media scanner watching /output never sees it at all, and the
-    # staging directory can sit on a different (faster) disk. The instance tag
-    # keeps two containers that share a staging directory apart.
+    # $1 = final file name (stem.ext). In STAGING_DIR a media scanner watching
+    # the output never sees the file, and the directory can sit on a faster
+    # disk. The instance tag keeps two containers sharing it apart.
     printf '%s/.%s.%s.partial' "${STAGING_DIR}" "${INSTANCE}" "$1"
 }
 
 finalise_output() {
     # $1 = finished staging file, $2 = final destination.
     #
-    # Two steps on purpose. When STAGING_DIR is on a different filesystem than
-    # the output, `mv` is a copy and is NOT atomic, so a scanner could index a
-    # half-copied file. Copying to a hidden sibling INSIDE the destination
+    # Across filesystems `mv` is a copy and not atomic, so a scanner could index
+    # a half-copied file. Moving to a hidden sibling in the destination
     # directory first makes the last step a same-filesystem rename, which is.
     local stage="$1" dst="$2" tmp
     tmp="$(dirname -- "${dst}")/.${INSTANCE}.$(basename -- "${dst}").moving"
     rm -f -- "${tmp}"
     if ! mv -f -- "${stage}" "${tmp}"; then
-        log "ERROR: could not move '${stage}' to '${tmp}' — is the output folder writable and does it have room?"
+        log "ERROR: could not move '${stage}' to '${tmp}'. Is the output folder writable and does it have room?"
         return 1
     fi
     if ! mv -f -- "${tmp}" "${dst}"; then
@@ -269,8 +251,8 @@ run_hook() {
     {
         echo "=== $(date -Is) hook ${name} $*"
     } >> "${JOB_LOG}"
-    # /bin/sh on purpose, shebang ignored — the same contract jlesage documents,
-    # so a hook copied over from that image behaves identically here.
+    # /bin/sh whatever the shebang says, the contract jlesage documents, so a
+    # hook copied over from that image behaves the same here.
     /bin/sh "${hook}" "$@" >> "${JOB_LOG}" 2>&1 || rc=$?
     [ "${rc}" -ne 0 ] && log "hook ${name}: exited ${rc}"
     return "${rc}"
@@ -307,7 +289,7 @@ acquire_lock() {
     # fine for a single container, so carry on unlocked and say so exactly once.
     if [ "${LOCK_WARNED}" -eq 0 ]; then
         log "NOTE: '${dir}' is not writable, so cross-container locking is off."
-        log "      Fine for one container. Do NOT point a second instance at this"
+        log "      Fine for one container. Do not point a second instance at this"
         log "      folder, or both would convert the same file at the same time."
         LOCK_WARNED=1
     fi
@@ -323,8 +305,7 @@ release_lock() {
 }
 
 clear_own_locks() {
-    # Only ever removes locks THIS container left behind after an unclean stop.
-    # Another running instance's lock is never touched.
+    # Removes only the locks this container left behind after an unclean stop.
     local dir="$1" lock owner
     for lock in "${dir}"/.handbrake-lock-*; do
         [ -d "${lock}" ] || continue
@@ -338,7 +319,7 @@ clear_own_locks() {
 }
 
 hb_run() {
-    # $1 = source, $2 = destination. The ONE HandBrakeCLI invocation site.
+    # $1 = source, $2 = destination. The single place HandBrakeCLI runs.
     local src="$1" dst="$2" rc
     local -a args
     args=( --preset "${PRESET}" --input "${src}" --output "${dst}" )
@@ -346,7 +327,7 @@ hb_run() {
     [ "${#HB_GPU_ARGS[@]}" -gt 0 ] && args+=( "${HB_GPU_ARGS[@]}" )
     [ "${#HB_EXTRA_ARGS[@]}" -gt 0 ] && args+=( "${HB_EXTRA_ARGS[@]}" )
 
-    # Per-file arguments from the hb_custom_args.sh hook, appended LAST so they
+    # Per-file arguments from the hb_custom_args.sh hook, appended last so they
     # win over both the GPU seam and AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS
     # (HandBrakeCLI takes the last occurrence of a repeated flag).
     local -a hook_args=()
@@ -369,7 +350,6 @@ hb_run() {
     return "${rc}"
 }
 
-# ---- watch folder resolution -----------------------------------------------
 resolve_watch_dirs() {
     local -a dirs=()
     local i d
@@ -384,9 +364,8 @@ resolve_watch_dirs() {
     printf '%s\n' "${dirs[@]:-}"
 }
 
-# ---- startup ---------------------------------------------------------------
 if ! truthy "${AUTOMATED_CONVERSION:-1}"; then
-    log "automated conversion is disabled (AUTOMATED_CONVERSION=${AUTOMATED_CONVERSION:-1}) — idling"
+    log "automated conversion is disabled (AUTOMATED_CONVERSION=${AUTOMATED_CONVERSION:-1}), idling"
     exec sleep infinity
 fi
 
@@ -400,13 +379,12 @@ if [ "${#WATCH_DIRS[@]}" -eq 1 ] && [ -z "${WATCH_DIRS[0]}" ]; then
 fi
 
 if [ "${#WATCH_DIRS[@]}" -eq 0 ]; then
-    log "no watch folder found (AUTOMATED_CONVERSION_WATCH_DIR=${WATCH_DIR_SETTING}) — idling"
+    log "no watch folder found (AUTOMATED_CONVERSION_WATCH_DIR=${WATCH_DIR_SETTING}), idling"
     exec sleep infinity
 fi
 
 mkdir -p "${OUTPUT_DIR}"
 
-# ---- staging directory ------------------------------------------------------
 # Refuse to run rather than fail every single conversion: an unwritable staging
 # directory is a permanent misconfiguration, not a transient error, and silently
 # retrying it forever would just fill the log.
@@ -420,8 +398,8 @@ if [ ! -d "${STAGING_DIR}" ] || [ ! -w "${STAGING_DIR}" ]; then
     exec sleep infinity
 fi
 
-# Leftovers from an unclean stop of THIS container. Another instance's files
-# carry a different instance tag and are deliberately left alone.
+# Leftovers from an unclean stop of this container; another instance's files
+# carry a different tag.
 find "${STAGING_DIR}" -maxdepth 1 -type f -name ".${INSTANCE}.*.partial" -delete 2>/dev/null || true
 find "${OUTPUT_DIR}" -type f -name ".${INSTANCE}.*.moving" -delete 2>/dev/null || true
 for _wd in "${WATCH_DIRS[@]}"; do
@@ -444,18 +422,17 @@ declare -A SEEN_KEY
 declare -A SEEN_AT
 WAS_ACTIVE=1
 
-# ---- main loop -------------------------------------------------------------
 while true; do
     if ! in_active_window; then
         if [ "${WAS_ACTIVE}" -eq 1 ]; then
-            log "outside the active hours window (${ACTIVE_HOURS_SETTING}) — idling until it opens again"
+            log "outside the active hours window (${ACTIVE_HOURS_SETTING}), idling until it opens again"
             WAS_ACTIVE=0
         fi
         sleep "${CHECK_INTERVAL}"
         continue
     fi
     if [ "${WAS_ACTIVE}" -eq 0 ]; then
-        log "active hours window (${ACTIVE_HOURS_SETTING}) opened — resuming conversion"
+        log "active hours window (${ACTIVE_HOURS_SETTING}) opened, resuming conversion"
         WAS_ACTIVE=1
     fi
     for watch_dir in "${WATCH_DIRS[@]}"; do
@@ -480,7 +457,6 @@ while true; do
             fi
             [ $(( now - ${SEEN_AT[${src}]} )) -ge "${STABLE_TIME}" ] || continue
 
-            # -- cross-instance lock -----------------------------------------
             # Two containers may watch the same folder to convert twice as many
             # files at once. Whoever creates the lock directory first owns this
             # file; everybody else moves on to the next one.
@@ -488,7 +464,6 @@ while true; do
                 continue
             fi
 
-            # -- destination -------------------------------------------------
             out_base="${OUTPUT_DIR}"
             case "${OUTPUT_SUBDIR}" in
                 "") : ;;
@@ -511,13 +486,12 @@ while true; do
                 continue
             fi
 
-            # -- pre-conversion hook -----------------------------------------
             HB_INPUT="${src}"
             HB_OUTPUT="${dst}"
             HB_STATUS=""
             HB_WATCH_DIR="${watch_dir}"
             if ! run_hook pre_conversion.sh "${dst}" "${src}" "${PRESET}"; then
-                log "pre_conversion.sh refused '${base}' — skipping it (recorded as failed)"
+                log "pre_conversion.sh refused '${base}', skipping it (recorded as failed)"
                 printf '%s\n' "${key}" >> "${FAILED_LIST}"
                 release_lock
                 continue
@@ -543,11 +517,9 @@ while true; do
                     log "removed source '${src}' (AUTOMATED_CONVERSION_KEEP_SOURCE=0)"
                     unset "SEEN_KEY[${src}]" "SEEN_AT[${src}]"
                 else
-                    # KEEP_SOURCE=0 relies on the file's ABSENCE to avoid
-                    # reprocessing it; a silently failed rm (e.g. the watch
-                    # folder's permissions do not allow deletion) would
-                    # otherwise re-convert this file on every future pass.
-                    log "WARNING: could not remove source '${src}' — check the watch folder's permissions."
+                    # KEEP_SOURCE=0 relies on the file being gone; a failed rm
+                    # would otherwise re-convert it on every pass.
+                    log "WARNING: could not remove source '${src}', check the watch folder's permissions."
                     log "         Recording it as done instead so it is not converted again."
                     printf '%s\n' "${key}" >> "${DONE_LIST}"
                 fi
@@ -555,22 +527,21 @@ while true; do
                 rm -f -- "${CURRENT_PARTIAL}"
                 CURRENT_PARTIAL=""
                 printf '%s\n' "${key}" >> "${FAILED_LIST}"
-                log "FAILED '${src}' — it will not be retried until the file changes."
+                log "FAILED '${src}', it will not be retried until the file changes."
                 log "last 20 lines of ${JOB_LOG}:"
                 tail -n 20 "${JOB_LOG}" || true
-                notify critical "Conversion failed" "${base} — see /config/handbrake-watch.log"
+                notify critical "Conversion failed" "${base}, see /config/handbrake-watch.log"
                 HB_STATUS="1"
             fi
 
-            # -- post-conversion hook ----------------------------------------
             # Runs for success and failure alike, and only after the finished
             # file already reached its final path. Its exit code is ignored.
             run_hook post_conversion.sh "${HB_STATUS}" "${dst}" "${src}" "${PRESET}" || true
             release_lock
         done < <(find_watch_dir "${watch_dir}")
 
-        # -- per-folder hook, only after a pass that actually did something ---
-        # An idle container must stay quiet, so this never fires on an empty pass.
+        # An idle container stays quiet, so the per-folder hook fires only after
+        # a pass that converted something.
         if [ "${processed}" -gt 0 ]; then
             HB_INPUT=""
             HB_OUTPUT=""

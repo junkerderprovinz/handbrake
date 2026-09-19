@@ -1,42 +1,38 @@
 #!/usr/bin/env bash
-# ---------------------------------------------------------------------------
-# handbrake-web.sh <pre-nginx|post-config>
-# ---------------------------------------------------------------------------
-# Translates the jlesage-style WEB_* variables onto knobs the LinuxServer
-# Selkies base ALREADY provides, instead of re-implementing a file manager, a
-# terminal, a clipboard bridge or an auth layer that the base ships for free:
+# Usage: handbrake-web.sh <pre-nginx|post-config>
 #
-#   WEB_FILE_MANAGER*  -> FILE_MANAGER_PATH + SELKIES_FILE_TRANSFERS +
-#                         SELKIES_UPLOAD_DIR + nginx deny locations
-#   WEB_TERMINAL*      -> DISABLE_TERMINALS + an openbox keybind
+# Maps jlesage's WEB_* variables onto what the LinuxServer Selkies base already
+# provides, instead of reimplementing a file manager, a terminal, a clipboard
+# bridge or an auth layer:
+#
+#   WEB_FILE_MANAGER*  -> FILE_MANAGER_PATH, SELKIES_FILE_TRANSFERS,
+#                         SELKIES_UPLOAD_DIR and nginx deny locations
+#   WEB_TERMINAL*      -> DISABLE_TERMINALS and an openbox keybind
 #   WEB_NOTIFICATION   -> a themed dunstrc (dunst itself is started by
 #                         /defaults/autostart, inside the desktop session)
 #
-# Deliberately NOT translated, because the base already does them and a second
-# variable doing the same job two different ways is worse than none:
+# Not mapped, because the base already covers them and a second variable for
+# the same job would only add a way to get it wrong:
 #   WEB_AUDIO                 -> PulseAudio + SELKIES_AUDIO_ENABLED, on by default
 #   WEB_HOST_CLIPBOARD_SYNC   -> SELKIES_CLIPBOARD_ENABLED, on by default
-#   WEB_AUTHENTICATION*       -> CUSTOM_USER / PASSWORD (the house pattern)
+#   WEB_AUTHENTICATION*       -> CUSTOM_USER / PASSWORD
 #   SECURE_CONNECTION         -> HTTPS on 3001, always
 #   ENABLE_CJK_FONT           -> fonts-noto-cjk, always installed
 #
-# TWO PHASES, because the base consumes some of these before it writes the nginx
-# config and produces others only afterwards:
+# Two phases, because the base consumes some of these before it writes the
+# nginx config and produces others only afterwards:
 #
-#   pre-nginx     run by init-handbrake-web BEFORE the base's init-nginx, which
-#                 substitutes $FILE_MANAGER_PATH into
-#                 /etc/nginx/sites-available/default and deletes the entire
-#                 files{} block when SELKIES_FILE_TRANSFERS carries no
-#                 "download". Setting these later has no effect at all.
-#   post-config   run by init-handbrake-web-post AFTER the base's
+#   pre-nginx     runs from init-handbrake-web before the base's init-nginx,
+#                 which substitutes $FILE_MANAGER_PATH into
+#                 /etc/nginx/sites-available/default and deletes the whole
+#                 files{} block when SELKIES_FILE_TRANSFERS has no "download".
+#   post-config   runs from init-handbrake-web-post after the base's
 #                 init-selkies-config, which restores /etc/xdg/openbox/rc.xml
-#                 from its .bak on EVERY start — a keybind written earlier is
-#                 silently thrown away. The nginx config also only exists once
-#                 init-nginx has run.
+#                 from its .bak on every start and would drop an earlier
+#                 keybind. The nginx config also exists only after init-nginx.
 #
-# All logging goes to STDERR on purpose: resolve_allowed() prints its result on
-# stdout and must not have log lines mixed into it.
-# ---------------------------------------------------------------------------
+# All logging goes to stderr because resolve_allowed() prints its result on
+# stdout.
 set -u
 
 log() { echo "[handbrake-web] $*" >&2; }
@@ -60,16 +56,11 @@ SYS_RC_XML="/etc/xdg/openbox/rc.xml"
 USER_RC_XML="/config/.config/openbox/rc.xml"
 TERMINAL_LAUNCHER="/usr/local/bin/handbrake-terminal.sh"
 
-# Directories the file manager must never publish. /config is the important one:
-# it holds the WebUI's TLS PRIVATE KEY at /config/ssl/cert.key, which anyone who
-# can reach the port could then simply download. The rest are the container's own
-# guts and are never what a user meant. Subdirectories (/config/hooks, say) stay
-# allowed — only these exact paths are refused.
+# Paths the file manager never publishes. /config holds the WebUI's TLS private
+# key at /config/ssl/cert.key, which anyone reaching the port could download;
+# the rest are the container's own internals. Subdirectories such as
+# /config/hooks stay allowed, only these exact paths are refused.
 FORBIDDEN_PATHS="/ /bin /boot /config /dev /etc /lib /lib64 /proc /root /run /sbin /sys /usr /var"
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
 
 # Reject anything that could break out of an nginx directive or a shell word.
 # Glob characters are rejected too: allowed paths are used as case patterns when
@@ -83,10 +74,8 @@ safe_path() {
     case "$1" in
         *[\"\\\$\;\{\}\#\`\'\*\?\[\]]*) return 1 ;;
     esac
-    # $(...) strips trailing newlines, so $(printf '\n') is the EMPTY string and
-    # *""* matches everything — that bug once made this function reject every
-    # path unconditionally. $'\n' is a literal newline with no substitution
-    # involved, so nothing strips it.
+    # $'\n' rather than $(printf '\n'): command substitution strips the
+    # newline, and *""* would then match every path.
     case "$1" in
         *$'\n'*) return 1 ;;
     esac
@@ -132,7 +121,7 @@ resolve_allowed() {
         p="${p%/}"
         [ -n "${p}" ] || continue
         if ! safe_path "${p}"; then
-            log "WARNING: ignoring allowed path '${p}' — not absolute, or it contains a character that is unsafe in an nginx directive"
+            log "WARNING: ignoring allowed path '${p}': not absolute, or it contains a character that is unsafe in an nginx directive"
             continue
         fi
         if forbidden "${p}"; then
@@ -155,7 +144,7 @@ farm_name() {
     printf '%s' "${n}"
 }
 
-# The base's nginx block serves exactly ONE directory. A tree of symlinks under
+# The base's nginx block serves exactly one directory. A tree of symlinks under
 # that one directory is what turns it into the multi-path file manager jlesage
 # exposes. nginx follows symlinks by default (disable_symlinks is off), and the
 # farm lives on tmpfs so it is rebuilt from scratch on every start and can never
@@ -181,11 +170,11 @@ build_farm() {
         log "file manager: /files/${candidate}/ -> ${p}"
     done < <(resolve_allowed)
     if [ ! -s "${FARM_MAP}" ]; then
-        log "WARNING: no allowed path resolved to an existing directory — /files/ will be empty."
+        log "WARNING: no allowed path resolved to an existing directory, so /files/ will be empty."
     fi
 }
 
-# Uploads land in a REAL directory, not in the farm. The first writable allowed
+# Uploads land in a real directory, not in the farm. The first writable allowed
 # path wins, which under AUTO is /watch: upload a video in the browser and the
 # watch-folder daemon converts it.
 pick_upload_dir() {
@@ -208,7 +197,7 @@ write_dunstrc() {
     esac
     mkdir -p "${dir}"
     cat > "${dir}/dunstrc" <<EOF
-# Written by handbrake-web.sh on every container start — do not edit.
+# Written by handbrake-web.sh on every container start, do not edit.
 # Colours follow HANDBRAKE_THEME so a notification never flashes a white box
 # across a dark desktop.
 [global]
@@ -248,9 +237,6 @@ EOF
     chown -R abc:abc "${dir}" 2>/dev/null || true
 }
 
-# ---------------------------------------------------------------------------
-# phase: pre-nginx
-# ---------------------------------------------------------------------------
 phase_pre_nginx() {
     mkdir -p /run/handbrake
 
@@ -261,17 +247,15 @@ phase_pre_nginx() {
     install -o abc -g abc -m 0644 /dev/null /run/handbrake/session-env 2>/dev/null \
         || : > /run/handbrake/session-env
 
-    # ---- web file manager --------------------------------------------------
     if truthy "${WEB_FILE_MANAGER:-1}"; then
         build_farm
         set_env FILE_MANAGER_PATH "${FARM_ROOT}"
         set_env SELKIES_UPLOAD_DIR "$(pick_upload_dir)"
-        log "file manager: ON — browse /files/, uploads go to $(cat /run/s6/container_environment/SELKIES_UPLOAD_DIR)"
+        log "file manager: ON at /files/, uploads go to $(cat /run/s6/container_environment/SELKIES_UPLOAD_DIR)"
     else
         # Removing "download" from SELKIES_FILE_TRANSFERS makes the base delete
         # the whole nginx files{} block, and SELKIES_UI_SIDEBAR_SHOW_FILES=false
-        # hides the sidebar's upload panel. No code of our own is needed to turn
-        # the feature off.
+        # hides the sidebar's upload panel.
         set_env SELKIES_FILE_TRANSFERS ""
         set_env SELKIES_UI_SIDEBAR_SHOW_FILES "false"
         rm -rf -- "${FARM_ROOT}"
@@ -279,35 +263,30 @@ phase_pre_nginx() {
         log "file manager: OFF (WEB_FILE_MANAGER=${WEB_FILE_MANAGER:-1})"
     fi
 
-    # ---- web terminal ------------------------------------------------------
     if [ -n "${DISABLE_TERMINALS+x}" ]; then
-        log "terminal: DISABLE_TERMINALS is set explicitly ('${DISABLE_TERMINALS}') — WEB_TERMINAL is ignored"
+        log "terminal: DISABLE_TERMINALS is set explicitly ('${DISABLE_TERMINALS}'), so WEB_TERMINAL is ignored"
     elif truthy "${WEB_TERMINAL:-0}"; then
         set_env DISABLE_TERMINALS "false"
-        log "terminal: ON — press Ctrl+Alt+T on the web desktop (shell ${WEB_TERMINAL_SHELL_PATH:-/bin/bash})"
+        log "terminal: ON, press Ctrl+Alt+T on the web desktop (shell ${WEB_TERMINAL_SHELL_PATH:-/bin/bash})"
     else
         set_env DISABLE_TERMINALS "true"
-        log "terminal: OFF (WEB_TERMINAL=0) — the base chmods every terminal binary to 0000"
+        log "terminal: OFF (WEB_TERMINAL=0), the base chmods every terminal binary to 0000"
     fi
 
-    # ---- notifications -----------------------------------------------------
     if truthy "${WEB_NOTIFICATION:-0}"; then
         write_dunstrc
-        log "notifications: ON — conversion results are shown on the web desktop"
+        log "notifications: ON, conversion results are shown on the web desktop"
     else
         log "notifications: OFF (WEB_NOTIFICATION=0)"
     fi
 }
 
-# ---------------------------------------------------------------------------
-# phase: post-config
-# ---------------------------------------------------------------------------
 apply_nginx_denies() {
     local raw="${WEB_FILE_MANAGER_DENIED_PATHS:-}"
     truthy "${WEB_FILE_MANAGER:-1}" || return 0
     [ -n "${raw}" ] || return 0
     if [ ! -f "${NGINX_CONFIG}" ]; then
-        log "WARNING: ${NGINX_CONFIG} is missing — denied paths cannot be applied"
+        log "WARNING: ${NGINX_CONFIG} is missing, so denied paths cannot be applied"
         return 0
     fi
 
@@ -319,7 +298,7 @@ apply_nginx_denies() {
         d="${d%/}"
         [ -n "${d}" ] || continue
         if ! safe_path "${d}"; then
-            log "WARNING: ignoring denied path '${d}' — not absolute, or unsafe characters"
+            log "WARNING: ignoring denied path '${d}': not absolute, or unsafe characters"
             continue
         fi
         matched=0
@@ -338,12 +317,9 @@ apply_nginx_denies() {
                     ;;
             esac
         done < "${FARM_MAP}"
-        [ "${matched}" -eq 1 ] || log "denied path '${d}' is not inside any allowed path — nothing to block"
-    # printf '%s\n', not '%s': a `while read` loop silently DROPS the final
-    # line when the input has no trailing newline, so a single denied path (no
-    # comma) was never seen at all — found on the first real boot, where a
-    # WEB_FILE_MANAGER_DENIED_PATHS with one entry produced no log line and no
-    # 403 whatsoever.
+        [ "${matched}" -eq 1 ] || log "denied path '${d}' is not inside any allowed path, nothing to block"
+    # printf '%s\n' because `while read` drops a last line without a newline,
+    # which would lose a single denied path.
     done < <(printf '%s\n' "${raw}" | tr ',' '\n')
 
     [ -n "${blocks}" ] || return 0
@@ -354,7 +330,7 @@ apply_nginx_denies() {
     closers="$(grep -c '^}$' "${NGINX_CONFIG}" || true)"
     if [ "${closers}" != "2" ]; then
         log "ERROR: expected 2 server blocks in ${NGINX_CONFIG} but found ${closers}."
-        log "       The Selkies base changed its nginx template — denied paths were NOT applied."
+        log "       The Selkies base changed its nginx template; denied paths were not applied."
         log "       Set WEB_FILE_MANAGER=0 until this is fixed if the denied paths are load-bearing."
         return 0
     fi
@@ -366,7 +342,7 @@ apply_nginx_denies() {
         log "denied paths applied to both server blocks"
     else
         cp -a "${NGINX_CONFIG}.hb-bak" "${NGINX_CONFIG}"
-        log "ERROR: nginx rejected the generated denied-path rules — reverted to the base config."
+        log "ERROR: nginx rejected the generated denied-path rules, reverted to the base config."
         nginx -t 2>&1 | sed 's/^/[handbrake-web]   /' >&2
     fi
 }
@@ -378,7 +354,7 @@ apply_terminal_keybind() {
     # The base writes a root-owned, read-only user rc.xml when HARDEN_OPENBOX,
     # DISABLE_MOUSE_BUTTONS or HARDEN_KEYBINDS is on. Do not fight hardening.
     if [ -f "${USER_RC_XML}" ] && [ "$(stat -c '%U' "${USER_RC_XML}" 2>/dev/null)" = "root" ]; then
-        log "openbox rc.xml is locked by the base's hardening — terminal keybind not installed"
+        log "openbox rc.xml is locked by the base's hardening, terminal keybind not installed"
         return 0
     fi
 
@@ -391,11 +367,11 @@ apply_terminal_keybind() {
     fi
 
     if [ ! -f "${SYS_RC_XML}" ]; then
-        log "WARNING: ${SYS_RC_XML} is missing — no terminal keybind installed"
+        log "WARNING: ${SYS_RC_XML} is missing, no terminal keybind installed"
         return 0
     fi
 
-    # Copy the SYSTEM file every start so the base's own openbox tweaks (window
+    # Copy the system file every start so the base's own openbox tweaks (window
     # maximisation, decoration and keybind changes) keep flowing through, then
     # add one keybind on top. Same insertion point the base itself uses for its
     # C-S-d keybind, so the pattern is proven against this exact rc.xml.
@@ -406,7 +382,7 @@ apply_terminal_keybind() {
     if grep -q "${TERMINAL_LAUNCHER}" "${USER_RC_XML}"; then
         log "terminal keybind installed: Ctrl+Alt+T -> ${TERMINAL_LAUNCHER}"
     else
-        log "WARNING: no </keyboard> element in ${SYS_RC_XML} — terminal keybind not installed."
+        log "WARNING: no </keyboard> element in ${SYS_RC_XML}, terminal keybind not installed."
         log "         The terminal is still reachable from the openbox root menu if a window is not covering the desktop."
     fi
     chown abc:abc "${dir}" "${USER_RC_XML}" 2>/dev/null || true
@@ -418,7 +394,6 @@ phase_post_config() {
     apply_terminal_keybind
 }
 
-# ---------------------------------------------------------------------------
 case "${1:-}" in
     pre-nginx)   phase_pre_nginx ;;
     post-config) phase_post_config ;;
