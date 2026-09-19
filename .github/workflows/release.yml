@@ -1,10 +1,9 @@
 name: Release
 
-# Creates a GitHub Release whenever a semver tag (vX.Y.Z) is pushed. The body is
-# the hand-written .github/release-notes/<tag>.md; auto-generated notes are only
-# a fallback for a tag that was cut without a notes file.
-# House rule: the release TITLE is the bare version (vX.Y.Z) — no repo name, no
-# extra heading inside the body.
+# Creates a GitHub Release for every vX.Y.Z tag. The body is the hand-written
+# .github/release-notes/<tag>.md; generated notes are only the fallback for a
+# tag cut without a notes file. The title stays the bare tag name, with no repo
+# name and no heading inside the body.
 
 on:
   push:
@@ -43,7 +42,7 @@ jobs:
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           NOTES_FILE=".github/release-notes/${TAG}.md"
-          # If the notes file is not in the tagged commit, fetch it from main.
+          # A tag cut before its notes were written still finds them on main.
           if [ ! -f "${NOTES_FILE}" ]; then
             git fetch origin main --depth=1 2>/dev/null || true
             mkdir -p .github/release-notes

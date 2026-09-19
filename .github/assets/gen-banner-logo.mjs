@@ -1,11 +1,10 @@
 /**
- * Generates the text-free support-thread banner (house convention, see
- * support-thread-banner-textless): handbrake-banner-logo.svg/.png - 1600x500,
- * white bg, ONLY the official HandBrake logo, no wordmark/claim text. Used in
- * SUPPORT_THREAD.html's banner slot instead of the full handbrake-banner.svg.
+ * Generates the text-free support-thread banner, handbrake-banner-logo.svg/.png:
+ * 1600x500 on white with only the official HandBrake logo. SUPPORT_THREAD.html
+ * uses it in place of the full handbrake-banner.svg.
  *
- * Embeds the SAME official logo verbatim (CC BY-SA 4.0, see NOTICE) as
- * gen-banner.mjs, centred on the canvas instead of left-anchored beside text.
+ * Embeds the same official logo verbatim (CC BY-SA 4.0, see NOTICE) as
+ * gen-banner.mjs, centred on the canvas instead of beside the text.
  *
  * Deps: `npm i -g @resvg/resvg-js`.
  * Run:  node .github/assets/gen-banner-logo.mjs
@@ -23,14 +22,11 @@ const { Resvg } = require(`${gRoot}/@resvg/resvg-js`);
 const __dir = dirname(fileURLToPath(import.meta.url));
 
 const W = 1600, H = 500;
-const LH = 380; // logo height, centred (house banner logo standard - see featherdrop)
+const LH = 380; // logo height, centred (house banner logo standard)
 const LW = LH; // square logo
 
-// Embed the official logo verbatim inside a positioned wrapper, centred on the
-// canvas. Same namespace-preserving approach as gen-banner.mjs: the source is
-// Inkscape-exported with several prefixed attributes (inkscape:, sodipodi:,
-// etc.), so every xmlns:* declaration must carry over or resvg rejects the
-// re-serialised tag as an unknown prefix.
+// Same wrapper as in gen-banner.mjs: it keeps every xmlns:* declaration of the
+// Inkscape export, or resvg rejects the prefixed attributes.
 const logoSrc = readFileSync(join(__dir, "handbrake-logo.svg"), "utf8")
   .replace(/<\?xml[^>]*\?>\s*/, "");
 const origSvgTagMatch = logoSrc.match(/<svg[\s\S]*?>/);
@@ -39,10 +35,8 @@ const xmlnsDecls = [...origSvgTag.matchAll(/\sxmlns(:[\w-]+)?="[^"]*"/g)].map((m
 if (!xmlnsDecls.some((d) => /^\s*xmlns="/.test(d))) {
   xmlnsDecls.unshift(' xmlns="http://www.w3.org/2000/svg"');
 }
-// The source has no viewBox (only width/height="1024"), which per spec means
-// the coordinate system matches width/height 1:1 - reconstruct it explicitly
-// so the wrapper below (which replaces width/height with the render size) has
-// an actual viewBox to map the artwork's 1024x1024 space into.
+// The source has width/height="1024" and no viewBox, and the wrapper needs one
+// to scale the artwork to the render size.
 const vbMatch = logoSrc.match(/viewBox="([^"]+)"/);
 const srcWidthMatch = origSvgTag.match(/[^-]width="(\d+(?:\.\d+)?)"/);
 const srcHeightMatch = origSvgTag.match(/[^-]height="(\d+(?:\.\d+)?)"/);
