@@ -1,25 +1,16 @@
 #!/usr/bin/env bash
-# ---------------------------------------------------------------------------
-# handbrake-theme.sh <dark|light>
-# ---------------------------------------------------------------------------
-# Applies HandBrake's NATIVE dark mode. HandBrake's GUI is GTK4 (no libadwaita),
-# so "dark mode" here means the stock Adwaita dark variant that ships inside
-# libgtk-4-1 — exactly the mechanism jlesage's DARK_MODE uses, and exactly what
-# a well-behaved GTK app picks up on any desktop.
+# Usage: handbrake-theme.sh <dark|light>
 #
-# WHY THE ENV VAR IS THE PRIMARY MECHANISM
-#   ghb calls color_scheme_set_async(APP_PREFERS_LIGHT) at startup
-#   (gtk/src/application.c) which sets GtkSettings:gtk-application-prefer-dark-
-#   theme to FALSE whenever the freedesktop desktop portal reports no
-#   preference — and this container has no portal. A settings.ini
-#   "gtk-application-prefer-dark-theme=1" is therefore overwritten seconds after
-#   the app starts. GTK4's theme resolution reads $GTK_THEME FIRST and returns
-#   before it ever looks at the setting, so the env var wins deterministically.
+# Applies HandBrake's native dark mode. The GUI is GTK4 without libadwaita, so
+# dark means the stock Adwaita dark variant inside libgtk-4-1, the same
+# mechanism as jlesage's DARK_MODE.
 #
-# TRADE-OFF, DOCUMENT IT IN THE README: because $GTK_THEME wins, HandBrake's own
-# in-app light/dark toggle has no visible effect. The container's
-# HANDBRAKE_THEME variable is the single source of truth for the theme.
-# ---------------------------------------------------------------------------
+# GTK_THEME carries the choice because ghb calls
+# color_scheme_set_async(APP_PREFERS_LIGHT) at startup (gtk/src/application.c),
+# which turns gtk-application-prefer-dark-theme off whenever the desktop portal
+# reports no preference, and this container has no portal. GTK4 reads
+# $GTK_THEME before that setting. As a result HandBrake's in-app light/dark
+# toggle has no visible effect; HANDBRAKE_THEME decides.
 set -eu
 
 log() { echo "[handbrake-theme] $*"; }
@@ -43,9 +34,8 @@ PROFILE_D="/config/.profile.d"
 
 mkdir -p "${CONFIG_HOME}/gtk-3.0" "${CONFIG_HOME}/gtk-4.0" "${PROFILE_D}"
 
-# Second layer: a real settings file, so every OTHER GTK app on the desktop
-# (file dialogs, future additions) follows the same choice even if it never
-# reads $GTK_THEME. Harmless for ghb, which the env var already pins.
+# settings.ini makes every other GTK app on the desktop follow the same choice;
+# ghb itself is pinned by GTK_THEME.
 for ver in 3.0 4.0; do
     cat > "${CONFIG_HOME}/gtk-${ver}/settings.ini" <<EOF
 [Settings]
@@ -56,18 +46,17 @@ gtk-font-name=DejaVu Sans 10
 EOF
 done
 
-# The Selkies desktop session does NOT inherit /run/s6/container_environment,
-# so the value is additionally written as a profile snippet that
-# /defaults/autostart sources right before launching ghb.
+# The Selkies desktop session does not inherit /run/s6/container_environment,
+# so /defaults/autostart sources this snippet before launching ghb.
 cat > "${PROFILE_D}/handbrake-theme.sh" <<EOF
-# Written by handbrake-theme.sh — do not edit, it is rewritten on every start.
+# Written by handbrake-theme.sh on every start, do not edit.
 export GTK_THEME="${GTK_THEME_VALUE}"
 export HANDBRAKE_THEME="${THEME}"
 EOF
 chmod 0644 "${PROFILE_D}/handbrake-theme.sh"
 
-# Primary layer: the s6 container environment, inherited by every s6 service
-# (the watch daemon, the READY service) and asserted by the CI smoke gate.
+# Every s6 service inherits the container environment, and the CI smoke gate
+# checks GTK_THEME there.
 mkdir -p /run/s6/container_environment
 printf '%s' "${GTK_THEME_VALUE}" > /run/s6/container_environment/GTK_THEME
 printf '%s' "${THEME}"           > /run/s6/container_environment/HANDBRAKE_THEME

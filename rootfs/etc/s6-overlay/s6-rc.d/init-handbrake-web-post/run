@@ -1,16 +1,11 @@
 #!/usr/bin/with-contenv bash
 # shellcheck shell=bash
-# -----------------------------------------------------------------------------
-# init-handbrake-web-post — the WEB_* translation layer, POST-config half
-# -----------------------------------------------------------------------------
-# Ordered after Plan 1's init-handbrake, which itself runs after the base's
-# init-selkies-config. Two things force this position:
-#   * /etc/nginx/sites-available/default only exists once init-nginx wrote it,
-#     and the denied-path locations are appended to that generated file.
-#   * init-selkies-config restores /etc/xdg/openbox/rc.xml from its .bak on
-#     EVERY start, so a terminal keybind written earlier would be thrown away.
+# The post-config half of the WEB_* mapping, ordered after init-handbrake and
+# so after the base's init-selkies-config. The denied-path locations go into
+# /etc/nginx/sites-available/default, which exists only once init-nginx wrote
+# it, and init-selkies-config restores /etc/xdg/openbox/rc.xml on every start,
+# which would drop an earlier terminal keybind.
 #
 # init-config-end/dependencies.d/init-handbrake-web-post makes the base wait for
 # this oneshot before init-services brings svc-nginx up.
-# -----------------------------------------------------------------------------
 exec /usr/local/bin/handbrake-web.sh post-config
