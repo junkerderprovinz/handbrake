@@ -2,7 +2,7 @@
  * Generates the HandBrake README banners (house theme-adaptive pair):
  *   handbrake-banner.svg / .png      : light 1600x500 - white bg, dark wordmark
  *   handbrake-banner-dark.svg / .png : dark 1600x500 - GitHub-dark bg, light wordmark
- * Both embed the SAME official HandBrake logo verbatim (CC BY-SA 4.0, see
+ * Both embed the same official HandBrake logo verbatim (CC BY-SA 4.0, see
  * NOTICE); only the background and text colours flip. The README serves the
  * pair via <picture>.
  *
@@ -12,8 +12,8 @@
  * never committed.
  *
  * The text is converted to SVG paths (opentype.js) so the SVG is self-contained.
- * NOTE: DejaVu's GSUB ccmp lookups crash opentype.js's feature engine, so glyph
- * runs are shaped glyph-by-glyph with manual pair kerning (plain Latin - no loss).
+ * DejaVu's GSUB ccmp lookups crash opentype.js's feature engine, so runs are
+ * shaped glyph by glyph with pair kerning, which loses nothing for plain Latin.
  *
  * Deps: `npm i -g @resvg/resvg-js opentype.js`.
  * Run:  node .github/assets/gen-banner.mjs
@@ -32,7 +32,6 @@ const opentype = require(`${gRoot}/opentype.js`);
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
-// ---- content + styling -----------------------------------------------------
 const NAME = "HandBrake";
 const CLAIM = "Rip it. Squish it. In the dark.";
 const THEMES = [
@@ -44,7 +43,6 @@ const LH = 400; // logo height
 // House banner standard: name 132 / claim 44, logo-to-text gap 70, name-to-claim gap 8.
 const nameSize = 132, claimSize = 44, gap = 70, lineGap = 8;
 const startX = 165; // left-anchored (house banner standard)
-// ---------------------------------------------------------------------------
 
 function shapeRun(font, text, size) {
   const scale = size / font.unitsPerEm;
@@ -103,13 +101,10 @@ const claimBaseline = nameBaseline + nameDesc + lineGap + claimAsc;
 const namePath = runPathData(nameFont, NAME, textX, nameBaseline, nameSize);
 const claimPath = runPathData(claimFont, CLAIM, textX, claimBaseline, claimSize);
 
-// Embed the official logo verbatim inside a positioned wrapper. Its viewBox is
-// read from the source so the artwork itself is never touched. The source is
-// Inkscape-exported and uses several prefixed attributes inside the body
-// (inkscape:, sodipodi:, rdf:, cc:, dc: - editor metadata plus a
-// sodipodi:namedview block), so the wrapper tag must carry over every
-// xmlns:* declaration the original root had, not just the default SVG
-// namespace, or resvg rejects the re-serialised tag as an unknown prefix.
+// The official logo goes in verbatim inside a positioned wrapper. It is an
+// Inkscape export with prefixed attributes (inkscape:, sodipodi:, rdf:, cc:,
+// dc:), so the wrapper keeps every xmlns:* declaration of the original root,
+// or resvg rejects the prefixes.
 const logoSrc = readFileSync(join(__dir, "handbrake-logo.svg"), "utf8")
   .replace(/<\?xml[^>]*\?>\s*/, "");
 const origSvgTagMatch = logoSrc.match(/<svg[\s\S]*?>/);
@@ -118,12 +113,9 @@ const xmlnsDecls = [...origSvgTag.matchAll(/\sxmlns(:[\w-]+)?="[^"]*"/g)].map((m
 if (!xmlnsDecls.some((d) => /^\s*xmlns="/.test(d))) {
   xmlnsDecls.unshift(' xmlns="http://www.w3.org/2000/svg"');
 }
-// The source has no viewBox at all (only width/height="1024"), which is valid
-// SVG (per spec the coordinate system then matches width/height 1:1) but must
-// be reconstructed explicitly here, since the wrapper below replaces the
-// original width/height with the render size and needs an actual viewBox to
-// map the artwork's own 1024x1024 space into it. A generic small fallback
-// here would silently clip the artwork to a corner instead of scaling it.
+// The source has width/height="1024" and no viewBox. The wrapper replaces
+// width/height with the render size, so the viewBox is rebuilt from them;
+// without it the artwork would be clipped instead of scaled.
 const vbMatch = logoSrc.match(/viewBox="([^"]+)"/);
 const srcWidthMatch = origSvgTag.match(/[^-]width="(\d+(?:\.\d+)?)"/);
 const srcHeightMatch = origSvgTag.match(/[^-]height="(\d+(?:\.\d+)?)"/);

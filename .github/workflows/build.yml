@@ -1,31 +1,16 @@
 name: Build & Push
 
-# -----------------------------------------------------------------------------
-# Builds the HandBrake-on-Selkies image and pushes it to:
-#   * GitHub Container Registry  (ghcr.io/junkerderprovinz/handbrake)
-#   * Docker Hub                 (docker.io/<DOCKERHUB_USERNAME>/handbrake)
-#     — active only once the DOCKERHUB_USERNAME variable and DOCKERHUB_TOKEN
-#       secret are set together; until then the build stays GHCR-only.
-#
-# Architecture: one NATIVE build job per platform (amd64 on ubuntu-latest,
-# arm64 on ubuntu-24.04-arm — free for public repos). Each job boots its image
-# and runs the full smoke gate, including a REAL transcode, then pushes by
-# digest; a merge job assembles the multi-arch manifest under the final tags.
-# Native beats QEMU here because the gate actually encodes video: a HandBrake
-# run under arm64 emulation would take minutes and time the gate out.
-#
-# Triggers:
-#   * Push to main           -> tags: edge, main, sha-<short>
-#   * Tag v*.*.*             -> tags: <version>, <major>, <major>.<minor>, plus
-#                               latest when that tag is the newest release
-#   * Weekly cron (Sun 04 UTC) — picks up upstream Selkies base updates
-#   * Manual workflow_dispatch
-# -----------------------------------------------------------------------------
+# Builds the image natively per platform, runs the gates against each one
+# (including a real transcode), pushes by digest and assembles the multi-arch
+# manifest on GHCR. Docker Hub joins once the DOCKERHUB_USERNAME variable and
+# the DOCKERHUB_TOKEN secret are both set. The arm64 job runs on an arm64
+# runner because a transcode under QEMU would time the gate out.
 
 on:
   push:
     branches: [ main ]
     tags: [ 'v*.*.*' ]
+  # Weekly, to pick up updates of the Selkies base.
   schedule:
     - cron: '0 4 * * 0'
   workflow_dispatch:
@@ -85,12 +70,9 @@ jobs:
             BUILD_DATE=${{ github.event.repository.updated_at }}
           cache-from: type=gha,scope=build-${{ matrix.arch }}
 
-      # ---------------------------------------------------------------------
-      # SMOKE GATE. A green docker build only proves the image BUILDS. This
-      # proves it boots, serves the WebUI, keeps HandBrake's GUI alive, applies
-      # the dark theme, and actually transcodes a video end to end.
-      # ---------------------------------------------------------------------
-      - name: Smoke test — ${{ matrix.arch }} must boot, stay up and transcode
+      # A green build only proves the image builds. This proves it boots, serves
+      # the WebUI, keeps the GUI alive, applies the dark theme and transcodes.
+      - name: Smoke test ${{ matrix.arch }} (boot, stay up, transcode)
         run: |
           set -euo pipefail
           img=handbrake:smoke-${{ matrix.arch }}
@@ -126,8 +108,8 @@ jobs:
             return 1
           }
 
-          # Real 180s wall-clock deadline (each probe can spend ~10s in curl
-          # timeouts, so an iteration counter would overshoot badly).
+          # A wall-clock deadline, because each probe can spend ~10s in curl
+          # timeouts and an iteration counter would overshoot badly.
           deadline=$((SECONDS + 180))
           webui=0
           while [ "$SECONDS" -lt "$deadline" ]; do
@@ -204,7 +186,7 @@ jobs:
           sleep 20
           pid2=$(docker exec "$name" pgrep -x ghb 2>/dev/null | head -n1 || true)
           [ -n "$pid2" ] || fail "the ghb GUI process died within 20s"
-          [ "$pid1" = "$pid2" ] || fail "ghb restarted within 20s (pid ${pid1} -> ${pid2}) — crash loop"
+          [ "$pid1" = "$pid2" ] || fail "ghb restarted within 20s (pid ${pid1} -> ${pid2}), a crash loop"
           echo "ghb stayed up with an unchanged pid"
 
           echo "== watch daemon is up =="
@@ -212,10 +194,8 @@ jobs:
             || fail "the watch-folder daemon is not running"
 
           echo "== READY banner printed =="
-          # A bare one-shot check here rode on the unrelated ghb wait above and
-          # only worked because that wait happened to already be generous
-          # enough. svc-handbrake-ready is its own longrun with its own
-          # timing, so poll it properly instead of assuming.
+          # svc-handbrake-ready is a longrun with its own timing, independent of
+          # the ghb wait above.
           ready=0
           deadline=$((SECONDS + 60))
           while [ "$SECONDS" -lt "$deadline" ]; do
@@ -247,16 +227,12 @@ jobs:
           echo "✅ smoke gate passed on ${{ matrix.arch }}"
           docker rm -f "$name" >/dev/null
 
-      # ---------------------------------------------------------------------
-      # FEATURE-PARITY GATE. Plan 1's smoke gate proves the container boots and
-      # transcodes with the DEFAULT environment. This one boots a second
-      # container with the parity features switched on and proves each of them
-      # actually does something: the file manager serves the data mounts, denied
-      # paths answer 403, the terminal binary is unlocked and keybound, dunst
-      # runs, hooks fire with the documented arguments, and the staging directory
-      # is used and left clean.
-      # ---------------------------------------------------------------------
-      - name: Feature-parity gate — ${{ matrix.arch }}
+      # The smoke gate runs with the default environment. This one switches the
+      # jlesage parity features on and proves each of them works: the file
+      # manager serves the data mounts, denied paths answer 403, the terminal is
+      # unlocked and keybound, dunst runs, hooks get the documented arguments,
+      # and the staging directory is used and left clean.
+      - name: Feature-parity gate ${{ matrix.arch }}
         run: |
           set -euo pipefail
           img=handbrake:smoke-${{ matrix.arch }}
@@ -297,13 +273,13 @@ jobs:
 
           echo "== authentication: the house pattern, not a second variable set =="
           anon=$(curl -k -s -o /dev/null -w '%{http_code}' --max-time 10 https://localhost:3101/ || true)
-          [ "$anon" = "401" ] || fail "expected 401 without credentials, got '${anon}' — CUSTOM_USER/PASSWORD did not enable basic auth"
+          [ "$anon" = "401" ] || fail "expected 401 without credentials, got '${anon}', so CUSTOM_USER/PASSWORD did not enable basic auth"
           auth=$($CURL -o /dev/null -w '%{http_code}' --max-time 10 https://localhost:3101/ || true)
           [ "$auth" = "200" ] || fail "expected 200 with credentials, got '${auth}'"
 
           echo "== web file manager =="
           aliases=$(docker exec "$name" sh -c 'grep -c "alias /run/handbrake/webfm/;" /etc/nginx/sites-available/default' || echo 0)
-          [ "$aliases" = "2" ] || fail "expected the farm alias in both nginx server blocks, found ${aliases} — did init-handbrake-web run before init-nginx?"
+          [ "$aliases" = "2" ] || fail "expected the farm alias in both nginx server blocks, found ${aliases}. Did init-handbrake-web run before init-nginx?"
           docker exec "$name" sh -c 'test -L /run/handbrake/webfm/output && test -L /run/handbrake/webfm/watch' \
             || fail "the file-manager farm is missing the /output or /watch symlink"
           $CURL https://localhost:3101/files/ | grep -q 'output' \
@@ -318,7 +294,7 @@ jobs:
           d3=$($CURL -o /dev/null -w '%{http_code}' https://localhost:3101/files/output/publicish/ || true)
           [ "$d1" = "403" ] || fail "denied directory returned ${d1}, expected 403"
           [ "$d2" = "403" ] || fail "denied file returned ${d2}, expected 403"
-          [ "$d3" = "200" ] || fail "a sibling of the denied path returned ${d3}, expected 200 — the deny location is over-matching"
+          [ "$d3" = "200" ] || fail "a sibling of the denied path returned ${d3}, expected 200, so the deny location is over-matching"
 
           echo "== web terminal =="
           mode=$(docker exec "$name" stat -c '%A' /usr/bin/xterm)
@@ -326,22 +302,21 @@ jobs:
           docker exec "$name" sh -c 'grep -q handbrake-terminal.sh /config/.config/openbox/rc.xml' \
             || fail "the Ctrl+Alt+T keybind is not in /config/.config/openbox/rc.xml"
           kb=$(docker exec "$name" sh -c 'grep -c "</keyboard>" /config/.config/openbox/rc.xml')
-          [ "$kb" = "1" ] || fail "openbox rc.xml has ${kb} </keyboard> elements — the keybind insertion corrupted it"
+          [ "$kb" = "1" ] || fail "openbox rc.xml has ${kb} </keyboard> elements, so the keybind insertion corrupted it"
 
           echo "== notifications =="
           docker exec "$name" sh -c 'pgrep -x dunst >/dev/null' || fail "WEB_NOTIFICATION=1 but dunst is not running"
           docker exec "$name" sh -c 'grep -q "^DISPLAY=" /run/handbrake/session-env' \
-            || fail "/run/handbrake/session-env has no DISPLAY — the desktop session never wrote it"
+            || fail "/run/handbrake/session-env has no DISPLAY, so the desktop session never wrote it"
 
           echo "== CJK fonts come from the base, no ENABLE_CJK_FONT needed =="
           cjk=$(docker exec "$name" sh -c 'fc-list :lang=ja | wc -l')
           [ "$cjk" -gt 0 ] || fail "no Japanese-capable font in the image"
 
           echo "== hooks + staging: one real transcode =="
-          # Built as temp files and docker cp'd in, not a shell heredoc: an
-          # embedded heredoc body inside a YAML "|" block scalar has to sit at
-          # the block's OWN indentation or YAML ends the block scalar early,
-          # which breaks the workflow file itself, not just the hook contract.
+          # Temp files instead of a heredoc: a heredoc body inside a YAML block
+          # scalar has to sit at the block's own indentation, or YAML ends the
+          # scalar early and the workflow file breaks.
           mkdir -p /tmp/hb-hooks
           printf 'echo "PRE|$1|$2|$3" > /config/hook-pre.txt\n' > /tmp/hb-hooks/pre_conversion.sh
           printf 'echo "POST|$1|$2|$3|$4" > /config/hook-post.txt\n' > /tmp/hb-hooks/post_conversion.sh
@@ -387,12 +362,10 @@ jobs:
           echo "✅ feature-parity gate passed on ${{ matrix.arch }}"
           docker rm -f "$name" >/dev/null
 
-      # ---------------------------------------------------------------------
-      # BEYOND-PARITY GATE. Three features added after full jlesage parity was
-      # reached: watch-folder directory exclusion, a daily active-hours
-      # window, and a hook for manual (non-watch-folder) GUI conversions.
-      # ---------------------------------------------------------------------
-      - name: Beyond-parity gate — ${{ matrix.arch }}
+      # The features jlesage's image does not have: watch-folder directory
+      # exclusion, the active-hours window and the hook for manual GUI
+      # conversions.
+      - name: Beyond-parity gate ${{ matrix.arch }}
         run: |
           set -euo pipefail
           img=handbrake:smoke-${{ matrix.arch }}
@@ -418,11 +391,8 @@ jobs:
             [ "$up" -eq 1 ] || fail "the WebUI did not respond within 180s"
           }
 
-          # svc-handbrake-watch is a separate longrun from svc-nginx, with no
-          # dependency between them — the WebUI answering does NOT guarantee
-          # the watch daemon has printed its startup log lines yet. A bare
-          # one-shot grep right after wait_for_webui raced and failed on a
-          # slower runner; poll instead.
+          # svc-handbrake-watch and svc-nginx are independent longruns, so an
+          # answering WebUI says nothing about the watch daemon's startup lines.
           wait_for_log() {
             local pattern="$1" timeout="${2:-30}" deadline
             deadline=$((SECONDS + timeout))
@@ -493,12 +463,10 @@ jobs:
 
           echo "✅ beyond-parity gate passed on ${{ matrix.arch }}"
 
-      # The opt-in CSS path. Until v1.1.0 nothing here was ever executed in CI:
-      # every gate ran with the Dockerfile default INSTALL_LIBDVDCSS=false, so a
-      # switch that silently did nothing shipped for two days. This gate turns it
-      # on and insists on a loadable library, which is the only claim the README
-      # is allowed to make (an actual disc still needs hardware nobody here has).
-      - name: libdvdcss gate — ${{ matrix.arch }}
+      # Every other gate runs with the default INSTALL_LIBDVDCSS=false. This one
+      # turns it on and insists on a loadable library, which is as far as CI can
+      # go without a disc drive.
+      - name: libdvdcss gate ${{ matrix.arch }}
         run: |
           set -euo pipefail
           img=handbrake:smoke-${{ matrix.arch }}
@@ -537,10 +505,9 @@ jobs:
             'ldconfig -p | grep -q libdvdcss && exit 1 || exit 0' \
             || fail "the image ships libdvdcss; it must only ever be built on the operator's machine"
 
-          # /config has to be a real volume that outlives the container: the cache
-          # lives there, and only a RECREATED container exercises it. A plain
-          # restart keeps the writable layer, so the library is still installed
-          # and the oneshot correctly does nothing at all.
+          # /config has to be a volume that outlives the container: the cache
+          # lives there, and only a recreated container exercises it. A plain
+          # restart keeps the writable layer with the library still installed.
           vol=hb-dvdcss-config
           docker volume rm "$vol" >/dev/null 2>&1 || true
           docker volume create "$vol" >/dev/null
@@ -558,7 +525,7 @@ jobs:
           echo "== libdvdread looks for exactly this soname =="
           docker exec "$name" sh -c \
             'strings /usr/lib/*/libdvdread.so.* | grep -qx "libdvdcss.so.2"' \
-            || fail "libdvdread no longer dlopens libdvdcss.so.2 — the built soname may be wrong"
+            || fail "libdvdread no longer dlopens libdvdcss.so.2, so the built soname may be wrong"
 
           echo "== the build is cached =="
           docker exec "$name" sh -c 'ls /config/handbrake/libdvdcss/*/libdvdcss-*.tar.gz' \
@@ -585,9 +552,8 @@ jobs:
 
           echo "✅ libdvdcss gate passed on ${{ matrix.arch }}"
 
-      # CVE scan of the locally-loaded smoke image. Report-only: exit-code 0 so
-      # a HIGH/CRITICAL finding never blocks the build — results land in the
-      # repo's Security tab. ignore-unfixed hides CVEs with no upstream fix.
+      # Report only: findings land in the Security tab and never block the
+      # build. ignore-unfixed hides CVEs with no upstream fix.
       - name: Scan image for CVEs (Trivy)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -596,7 +562,7 @@ jobs:
           output: trivy-results-${{ matrix.arch }}.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "0"     # MUST stay 0 — report only, never fail the build
+          exit-code: "0"
 
       - name: Upload Trivy results to the Security tab
         if: ${{ github.event_name != 'pull_request' }}
@@ -666,18 +632,10 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Is the tag being built the newest release in this repo?
-      #
-      # This is the second half of the question the `latest` line below asks,
-      # and it exists because gating on "this is a tag" alone would reopen an
-      # accident that already happened here: re-cutting an OLD version tag
-      # rebuilds that old code and would drag `latest` backwards onto it. A tag
-      # may move `latest` only if it is also the highest version the repo has.
-      #
-      # The merge job never needed the source tree before, so it is checked out
-      # here purely to have a tag list to compare against; checkout brings no
-      # tags of its own, hence the explicit fetch. `sort -V` compares versions
-      # rather than strings, so v1.10.0 correctly beats v1.9.0.
+      # Re-cutting an old version tag rebuilds old code, so a tag moves `latest`
+      # only when it is also the highest version in the repo. This job needs the
+      # checkout for the tag list alone, and checkout fetches no tags, hence the
+      # explicit fetch. `sort -V` orders versions, so v1.10.0 beats v1.9.0.
       - name: Checkout (for the tag list)
         if: github.ref_type == 'tag'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -706,22 +664,10 @@ jobs:
           images: |
             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
             name=docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }},enable=${{ vars.DOCKERHUB_USERNAME != '' }}
-          # `latest` means "the newest released version", nothing else.
-          #
-          # It used to mean "the tip of the default branch", which is a
-          # different thing: on 2026-09-14 a 23-commit merge to main handed an
-          # unreleased build to everyone pulling `latest`, and the first bug
-          # report against it arrived before the release notes did. So `latest`
-          # now needs both conditions, because each one guards a different
-          # accident: the tag condition keeps unreleased main out of `latest`,
-          # and the newest condition (see the step above) keeps a re-cut of an
-          # older version tag from pulling `latest` backwards.
-          #
-          # The tip of the default branch gets `edge` instead. It is still
-          # built, still gated and still pullable, but nobody lands on it
-          # without asking for it by name. The weekly cron rebuild, which picks
-          # up upstream base-image updates rather than shipping a release,
-          # lands there too.
+          # `latest` is the newest released version: the tag condition keeps
+          # unreleased main out of it, and the newest condition above keeps a
+          # re-cut of an older tag from pulling it backwards. The tip of main
+          # and the weekly rebuild answer to `edge`.
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -735,8 +681,8 @@ jobs:
 
       - name: Create multi-arch manifests
         working-directory: /tmp/digests
-        # tags come from the DOCKER_METADATA_OUTPUT_TAGS env the metadata action
-        # exports — no ${{ }} interpolation inside the script (injection hygiene)
+        # The tags are read from DOCKER_METADATA_OUTPUT_TAGS instead of being
+        # interpolated into the script, which keeps them out of the shell source.
         run: |
           set -euo pipefail
           src="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}"
@@ -762,22 +708,16 @@ jobs:
         run: |
           docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
 
-      # Mirror the GitHub README to the Docker Hub repo's Overview.
-      #
-      # This uses DOCKERHUB_TOKEN, the same access token the push above uses.
-      # It used to use a separate DOCKERHUB_PASSWORD, on the belief that a push
-      # token cannot edit a description. That was measured wrong on 2026-09-05:
-      # an access token with read, write and delete scope edits it fine, while
-      # the account password is refused outright with 401, because Docker Hub's
-      # legacy login endpoint rejects a password once 2FA is on. One secret,
-      # and the one that actually works.
+      # Mirrors the README to the Docker Hub Overview with the push token; one
+      # with read, write and delete scope can edit the description. The account
+      # password does not work: Docker Hub refuses it with 401 once 2FA is on.
       - name: Docker Hub description sync ready?
         id: dhdesc
         if: ${{ vars.DOCKERHUB_USERNAME != '' && github.event_name != 'pull_request' }}
         env:
           PW: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          if [ -n "$PW" ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "DOCKERHUB_TOKEN not set — skipping Docker Hub description sync"; echo "go=false" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$PW" ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "DOCKERHUB_TOKEN not set, skipping Docker Hub description sync"; echo "go=false" >> "$GITHUB_OUTPUT"; fi
       - name: Sync README to Docker Hub
         if: ${{ steps.dhdesc.outputs.go == 'true' }}
         continue-on-error: true
