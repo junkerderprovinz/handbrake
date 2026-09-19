@@ -254,6 +254,7 @@ RUN chmod +x \
     /usr/local/bin/print-banner.sh \
     /usr/local/bin/selkies-resolution.sh \
     /etc/s6-overlay/s6-rc.d/init-screen-size/run \
+    /etc/s6-overlay/s6-rc.d/init-dpi/run \
     /usr/local/bin/handbrake-theme.sh \
     /usr/local/bin/handbrake-gpu.sh \
     /usr/local/bin/handbrake-watch.sh \
