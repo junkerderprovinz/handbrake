@@ -642,6 +642,15 @@ on focus, which can lower-case pasted capitals; set
 **Audio** works out of the box as well, so there is no variable for it. The
 microphone path is switched off, since a transcoder has no use for one.
 
+**Display scaling** follows the browser without any setting. Every browser is
+streamed at the size it reports, with the desktop at 96 DPI, so HandBrake looks
+the same on a 100 % desktop and on a laptop set to 200 %. On the laptop the text
+is a little softer, because the browser stretches the picture. The **HiDPI**
+switch in the Selkies sidebar is remembered per browser and wins over this
+default. With it on, a high-resolution display gets its physical pixels and
+HandBrake is drawn at half size, so if HandBrake looks tiny on a laptop, switch
+HiDPI off there.
+
 **CJK fonts** (Japanese, Korean, Chinese) are always installed. Nothing to enable,
 and filenames or subtitle tracks in those scripts render correctly everywhere in
 the UI.

@@ -378,11 +378,20 @@ ENV WEB_FILE_MANAGER=1 \
     WEB_TERMINAL_SHELL_PATH=/bin/bash \
     WEB_NOTIFICATION=0
 
-# HandBrake is a transcoder, not a telephone. Audio OUT stays on (the base
+# HandBrake is a transcoder, not a telephone. Audio out stays on (the base
 # provides it and HandBrake's preview player uses it, which is why jlesage's
 # WEB_AUDIO has no counterpart here), but an always-on microphone capture path
 # has no use in this container and is switched off.
 ENV SELKIES_MICROPHONE_ENABLED=false
+
+# GTK scales only its text by the DPI Selkies hands a HiDPI browser, so a
+# laptop streaming in physical pixels shows half-size icons next to full-size
+# text, and widgets grown at that DPI stay grown when a 100 % display connects
+# next. Streaming every browser at its CSS size with the DPI fixed at 96 keeps
+# one consistent size on any display. HiDPI can still be switched on per
+# browser in the Selkies sidebar.
+ENV SELKIES_USE_CSS_SCALING="true" \
+    SELKIES_SCALING_DPI="96"
 
 # Optical drives. The LinuxServer base already carries the device-group logic in
 # init-device-perms: for every path listed here it adds the container user to the
