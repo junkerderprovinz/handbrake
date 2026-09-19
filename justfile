@@ -1,6 +1,4 @@
-# HandBrake (Unraid container) task runner — run `just` to list recipes.
-# Recipes use sh (Git Bash on Windows).
-# This is a container repo: no Go, no Node app — the deliverable is the image.
+# Recipes run under sh (Git Bash on Windows). `just` lists them.
 
 set shell := ["sh", "-cu"]
 
@@ -12,13 +10,11 @@ default:
 build:
     docker build -t handbrake:smoke-amd64 .
 
-# Build + boot the container locally (Ctrl-C to stop; WebUI on 3000/HTTP, 3001/HTTPS)
+# Build and boot the container locally (Ctrl-C to stop; WebUI on 3000/HTTP, 3001/HTTPS)
 smoke: build
     docker run --rm -it --name hb-smoke -p 3000:3000 -p 3001:3001 handbrake:smoke-amd64
 
-# Build the OPTIONAL full-GPU variant (source-built QSV fix + AMD VCE) against
-# the local image. Long build (30-60 min), amd64 only, never published. See
-# Dockerfile.gpu.
+# Build the optional Dockerfile.gpu variant on the local image (long, amd64 only, never published)
 build-gpu-full: build
     docker build -f Dockerfile.gpu -t handbrake:gpu-full \
       --build-arg BASE_IMAGE=handbrake:smoke-amd64 .
@@ -28,7 +24,7 @@ convert-test:
     ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=15:duration=2 -c:v libx264 -pix_fmt yuv420p /tmp/hb-smoke.mkv
     docker cp /tmp/hb-smoke.mkv hb-smoke:/watch/hb-smoke.mkv
     docker exec hb-smoke chown abc:abc /watch/hb-smoke.mkv
-    @echo "dropped /watch/hb-smoke.mkv — watch: docker logs -f hb-smoke"
+    @echo "dropped /watch/hb-smoke.mkv, follow it with: docker logs -f hb-smoke"
 
 # Boot a throwaway container with every parity feature on (WebUI on 3101/HTTPS,
 # user parity / parity-secret). Mirrors the CI feature-parity gate.
@@ -40,7 +36,7 @@ parity: build
       -e WEB_FILE_MANAGER_DENIED_PATHS=/output/private \
       -e AUTOMATED_CONVERSION_STAGING_DIR=/staging \
       handbrake:smoke-amd64
-    @echo "https://localhost:3101/  (parity / parity-secret) — stop with: docker rm -f hb-parity"
+    @echo "https://localhost:3101/  (parity / parity-secret), stop with: docker rm -f hb-parity"
 
 # Assert the parity surface of a running `just parity` container
 parity-check:
@@ -87,4 +83,4 @@ banner:
 # Scaffold release notes for a version, e.g. `just notes 1.1.0`
 notes version:
     printf '## ✨ Added\n\n## ⚡ Improved\n\n## 🐛 Fixed\n' > .github/release-notes/v{{version}}.md
-    @echo "Wrote .github/release-notes/v{{version}}.md — edit it, then commit (NEVER tag without approval)."
+    @echo "Wrote .github/release-notes/v{{version}}.md. Edit it, then commit; tag only once the release is approved."

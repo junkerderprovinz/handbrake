@@ -1,56 +1,43 @@
 # syntax=docker/dockerfile:1.26
 #
-# OPTIONAL FULL-GPU VARIANT — build it yourself, it is not published.
-# -----------------------------------------------------------------------
-# Why this file exists at all:
+# Optional full-GPU variant. Build it yourself, it is not published.
 #
-#   1. Intel QSV: Ubuntu's handbrake-cli package DETECTS qsv_h264/qsv_h265
-#      correctly (it is compiled in — see docs/handbrake-capabilities.md), but
-#      every real encode with it fails at the muxer with "Application provided
-#      invalid, non monotonically increasing dts to muxer" /
-#      "av_interleaved_write_frame failed with error 'Invalid argument'".
-#      Measured on real Intel Quick Sync hardware (see
-#      docs/hardware-encoding-intel.md). This is a confirmed, reproducible bug
-#      in Ubuntu's specific packaged build, not in HandBrake itself or in this
-#      container: HandBrake/HandBrake#7962 documents another user hitting the
-#      IDENTICAL failure on the IDENTICAL environment (Ubuntu 26.04 "resolute",
-#      handbrake-cli 1.11.0 from the Ubuntu universe package), and confirms
-#      that building the SAME source tag from scratch with --enable-qsv fixes
-#      it completely — QSV then encodes cleanly, roughly 3x faster than CPU.
+#   1. Intel QSV: Ubuntu's handbrake-cli detects qsv_h264/qsv_h265 (they are
+#      compiled in, see docs/handbrake-capabilities.md), but every real encode
+#      fails at the muxer with "Application provided invalid, non monotonically
+#      increasing dts to muxer" / "av_interleaved_write_frame failed with error
+#      'Invalid argument'" (docs/hardware-encoding-intel.md). The bug is in
+#      Ubuntu's packaged build, not in HandBrake or this container:
+#      HandBrake/HandBrake#7962 reports the identical failure with Ubuntu 26.04
+#      and handbrake-cli 1.11.0 from universe, and building the same tag from
+#      source with --enable-qsv fixes it, at roughly 3x the speed of the CPU.
 #
 #   2. AMD VCE: Ubuntu does not build HandBrake with --enable-vce at all
-#      (upstream enables it only for Windows hosts by default), so the stock
-#      image has no AMD hardware encoder path whatsoever.
+#      (upstream enables it by default only for Windows hosts).
 #
-#   Both are the same fix: rebuild ONLY HandBrakeCLI from source with the
-#   flags Ubuntu's package does not (correctly) ship, and drop it over the
-#   stock binary. The GTK GUI is untouched and stays on the apt-installed
-#   binary; the GPU seam only ever feeds HandBrakeCLI, so that is exactly the
-#   surface the watch-folder converter uses. NVENC needs no fix here — it
-#   already works correctly from the apt package (see
-#   docs/hardware-encoding-nvidia.md) — but is enabled in this build anyway
-#   since it costs nothing extra and keeps this binary's capabilities a
-#   strict superset of the stock one.
+#   Both are fixed by rebuilding only HandBrakeCLI from source and dropping it
+#   over the stock binary. The GTK GUI stays on the apt build; the GPU seam only
+#   feeds HandBrakeCLI, which is what the watch-folder converter uses. NVENC
+#   already works from the apt package (docs/hardware-encoding-nvidia.md) and
+#   is enabled here too, so this binary can do everything the stock one can.
 #
-# What this variant still does NOT give you:
-#   AMD's AMF runtime (libamfrt64.so.1) is proprietary, is not in Ubuntu, and
-#   is not ours to redistribute. Install amf-amdgpu-pro on the host and
-#   bind-mount the library in, see the README. The last release of that
-#   package supports RDNA1 and RDNA2 only. On RDNA3/RDNA4 this variant will
-#   not help you with VCE (QSV and NVENC are unaffected by that limitation).
+# AMD's AMF runtime (libamfrt64.so.1) is proprietary, not in Ubuntu and not ours
+# to redistribute. Install amf-amdgpu-pro on the host and bind-mount the library
+# in, see the README. Its last release supports RDNA1 and RDNA2 only, so on
+# RDNA3/RDNA4 this variant does not help with VCE (QSV and NVENC are not
+# affected).
 #
-# Cost: a full HandBrake contrib build, 30-60 minutes on 8 cores, amd64 only.
-# Measured: 2m51s on a 32-core box (docker build --no-cache, 2026-08-16).
+# A full HandBrake contrib build, amd64 only: 30-60 minutes on 8 cores, under
+# three minutes on 32.
 #
 #   docker build -f Dockerfile.gpu -t handbrake:gpu-full .
 #
 ARG BASE_IMAGE=ghcr.io/junkerderprovinz/handbrake:latest
 ARG HANDBRAKE_TAG=1.11.2
 
-# The builder is the SAME base image as the runtime stage, so glibc and every
-# system library the new binary links against are identical by construction.
-# It also already has the QSV runtime packages installed (Dockerfile), which
-# is what makes the QSV proof step below possible without extra apt work.
+# The builder is the same image as the runtime stage, so glibc and every system
+# library the new binary links against are identical. It also carries the QSV
+# runtime packages already, so the checks below need no extra apt work.
 FROM ${BASE_IMAGE} AS builder
 ARG HANDBRAKE_TAG
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -59,11 +46,9 @@ RUN set -eux; \
     [ "$(dpkg --print-architecture)" = "amd64" ] \
         || { echo "ERROR: this variant is amd64 only (QSV and AMF are both x86-64 only)"; exit 1; }
 
-# HandBrake's own documented Ubuntu build dependencies, plus libva-dev,
-# libvpl-dev and libdrm-dev for --enable-qsv (the same three packages
-# Ubuntu's own debian/control lists as amd64 build-depends for handbrake-cli;
-# libdrm-dev was missed on the first pass here — libhb/ports.c includes
-# libdrm/drm.h directly and the build fails at compile time without it).
+# HandBrake's documented Ubuntu build dependencies, plus libva-dev, libvpl-dev
+# and libdrm-dev for --enable-qsv, the amd64 build-depends of Ubuntu's own
+# handbrake-cli (libhb/ports.c includes libdrm/drm.h directly).
 RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -82,41 +67,32 @@ RUN set -eux; \
 
 WORKDIR /src
 
-# --disable-gtk        : CLI only. Building the GTK4 GUI here would double the
-#                        build time for a binary this variant does not replace.
-# --enable-qsv         : the fix for the muxing bug described above. Same
-#                        source tag as the community-confirmed working build.
-# --enable-vce         : downloads the MIT-licensed AMF HEADERS
-#                        (AMF-headers-v1.5.0.tar.gz, sha256 verified by
-#                        contrib/amf/module.defs) and builds HandBrake's
-#                        bundled FFmpeg with --enable-amf plus the
-#                        h264_amf/hevc_amf/av1_amf encoders. No proprietary
-#                        binary is fetched or shipped.
-# --enable-nvenc       : already works from the apt package; included so this
-#                        binary's capabilities are a strict superset of it.
+# --disable-gtk   CLI only; the GUI would double the build time for a binary
+#                 this variant does not replace.
+# --enable-qsv    the fix for the muxer bug above, from the same source tag as
+#                 the build confirmed working upstream.
+# --enable-vce    downloads the MIT-licensed AMF headers (AMF-headers-v1.5.0,
+#                 sha256 checked by contrib/amf/module.defs) and builds the
+#                 bundled FFmpeg with --enable-amf and the h264_amf, hevc_amf
+#                 and av1_amf encoders. No proprietary binary is fetched.
+# --enable-nvenc  already works from the apt package; kept so this binary can
+#                 do everything the stock one can.
 RUN set -eux; \
     ./configure --launch-jobs="$(nproc)" --launch --disable-gtk \
         --enable-qsv --enable-vce --enable-nvenc; \
     test -x /src/build/HandBrakeCLI
 
-# Prove both hardware-only code paths are compiled in WITHOUT owning either
-# GPU. QSV: the built CLI must list qsv_h264 among its ENCODER STRINGS (the
-# identifiers are compiled-in literals regardless of the hardware probe — see
-# docs/hardware-encoding-intel.md section 1 for why --help itself cannot be
-# used for this on a GPU-less builder). VCE: the AMF component id libhb passes
-# to check_component_available() is a wide-char literal that only lands in the
-# binary when HB_PROJECT_FEATURE_VCE was on (libhb/vce_common.c); wchar_t is
-# 4 bytes on Linux, hence `strings -e L`.
+# Proves both hardware-only code paths are compiled in without owning either
+# GPU. qsv_h264 is a compiled-in literal whatever the hardware probe says, and
+# --help cannot answer this on a builder without a GPU
+# (docs/hardware-encoding-intel.md section 1). The AMF component id libhb passes
+# to check_component_available() is a wide-char literal that only exists when
+# HB_PROJECT_FEATURE_VCE was on (libhb/vce_common.c); wchar_t is 4 bytes on
+# Linux, hence `strings -e L`.
 #
-# Both checks write `strings` output to a file before grepping it, ON PURPOSE:
-# `strings ... | grep -qx ...` under `set -o pipefail` (above) is a real trap —
-# grep -q exits the instant it finds a match, strings gets SIGPIPE (exit 141),
-# and pipefail then reports the PIPELINE as failed (141) even though grep truly
-# found the string, because pipefail picks the rightmost NONZERO exit code, not
-# grep's own. Measured here: this exact `|| { ...; exit 1; }` fired with
-# "no qsv_h264 identifier" while a plain `strings | grep -i qsv` on the same
-# binary clearly showed `qsv_h264` present. Writing to a file removes the pipe
-# entirely, so there is nothing for SIGPIPE to interrupt.
+# `strings` writes to a file first because `strings | grep -q` fails under
+# pipefail: grep exits on the first match, strings dies of SIGPIPE (141), and
+# pipefail reports the pipeline as failed although grep found the string.
 RUN set -eux; \
     strings -a /src/build/HandBrakeCLI > /tmp/hb-strings.txt; \
     grep -qx 'qsv_h264' /tmp/hb-strings.txt \
@@ -127,31 +103,27 @@ RUN set -eux; \
     rm -f /tmp/hb-strings.txt /tmp/hb-strings-wide.txt; \
     echo "handbrake-gpu-full: qsv_h264 and AMF/VCE code paths confirmed in the binary"
 
-# Work out exactly which runtime packages the new binary needs, instead of
-# guessing a package list. Builder and runtime share a base, so the mapping is
-# valid in the final stage.
+# The runtime packages come from what the binary links against rather than a
+# hand-kept list. Builder and runtime share a base, so the list holds there too.
 RUN set -eux; \
     ldd /src/build/HandBrakeCLI | awk '/=> \//{print $3}' | sort -u \
       | xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | sort -u > /src/runtime-deps.txt; \
     echo "handbrake-gpu-full: runtime packages ->"; cat /src/runtime-deps.txt
 
-# ---------------------------------------------------------------------------
-# Runtime stage: the stock image plus one binary. Nothing from the builder's
-# 2+ GB of toolchain and sources is carried over.
-# ---------------------------------------------------------------------------
+# The stock image plus one binary; none of the builder's toolchain and sources.
 FROM ${BASE_IMAGE}
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 COPY --from=builder /src/build/HandBrakeCLI /usr/local/bin/HandBrakeCLI
 COPY --from=builder /src/runtime-deps.txt   /tmp/runtime-deps.txt
 
-# mesa-va-drivers is the radeonsi VA-API driver. It is NOT in the stock image
-# (which would pay for it on every pull for no gain), but here it is what makes
-# the vainfo section of /config/handbrake-gpu.log say anything useful on an AMD
-# box, and it is the prerequisite for HandBrake's upcoming VA-API encoders.
+# mesa-va-drivers is the radeonsi VA-API driver. The stock image leaves it out,
+# since every pull would pay for it; here it makes the vainfo section of
+# /config/handbrake-gpu.log useful on AMD, and HandBrake's upcoming VA-API
+# encoders need it.
 #
-# xargs -a feeds the computed package list as extra arguments, which keeps the
-# unquoted $(...) that shellcheck/hadolint would reject out of the RUN line.
+# xargs -a passes the computed package list as arguments, which keeps an
+# unquoted $(...) that shellcheck and hadolint would reject out of the RUN line.
 RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive xargs -a /tmp/runtime-deps.txt \
@@ -161,9 +133,9 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # /usr/local/bin precedes /usr/bin on PATH, so the watch daemon's bare
-# "HandBrakeCLI" resolves to this build. Fail loudly if that ever stops being
-# true, and re-record the capability dumps from the NEW binary so every
-# consumer of them describes this image and not the stock one.
+# "HandBrakeCLI" resolves to this build; the check fails if that stops being
+# true. The capability dumps are recorded again from the new binary so they
+# describe this image.
 RUN set -eux; \
     [ "$(command -v HandBrakeCLI)" = "/usr/local/bin/HandBrakeCLI" ] \
         || { echo "ERROR: $(command -v HandBrakeCLI) shadows the gpu-full build"; exit 1; }; \
