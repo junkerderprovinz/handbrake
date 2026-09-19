@@ -211,10 +211,11 @@ the cost of each, and the free field next to it takes anything not in the list. 
 a `WIDTHxHEIGHT` pair is ignored with a note in the container log rather than stopping the
 container.
 
-Pick a size at least as big as the largest browser window you open the WebUI in, counted in physical
-pixels: a 1600x1000 window on a laptop set to 200 % needs 3200x2000. A bigger window does not get a
-bigger desktop: the desktop keeps its last size in the top-left corner and the rest of the window
-stays black.
+Pick a size at least as big as the largest browser window you open the WebUI in. A bigger window
+does not get a bigger desktop: the desktop keeps its last size in the top-left corner and the rest
+of the window stays black. This image streams at the size your browser reports, so a 1600x1000
+window on a laptop set to 200 % counts as 1600x1000. With HiDPI switched on in the Selkies sidebar
+the same window counts in physical pixels, 3200x2000.
 
 <br>
 
