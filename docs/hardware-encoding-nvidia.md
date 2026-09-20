@@ -65,7 +65,7 @@ ff_prores
 theora
 ```
 
-**The binary was nevertheless built with NVENC** — the identifiers are string
+**The binary was nevertheless built with NVENC.** The identifiers are string
 literals inside it regardless of the hardware probe:
 
 ```sh
@@ -84,7 +84,7 @@ picks the first identifier from its preference list that the binary offers *on
 that machine*. It never hardcodes an identifier and never reads the dump for
 this. One `--help` call is the identifier lookup and the hardware probe at the
 same time. **The authoritative `nvenc_*` identifier list for this build,
-measured on real NVIDIA hardware, is in section 7** — it includes
+measured on real NVIDIA hardware, is in section 7.** It includes
 `nvenc_h264`, `nvenc_h265`, `nvenc_h265_10bit`, `nvenc_av1` and
 `nvenc_av1_10bit`.
 
@@ -107,7 +107,7 @@ Available --encoder-preset values for 'nvenc_h264' encoder:
 
 Unlike the `--encoder` list itself, `--encoder-preset-list` resolves its
 argument by name against the static encoder table and does not require a
-working GPU to answer — it printed correctly even on this GPU-less build
+working GPU to answer; it printed correctly even on this GPU-less build
 machine.
 
 The x264/x265 speed names (`veryfast`, `medium`, …) that HandBrake's software
@@ -132,19 +132,19 @@ docker run --rm --entrypoint sh handbrake:dev -c \
 ```
 
 **This static text is misleading and must not be trusted for whether NVDEC was
-actually compiled in — measured on real NVENC hardware.** The
+actually compiled in, measured on real NVENC hardware.** The
 `--enable-hw-decoding` help entry unconditionally names `nvdec` as a valid
 value regardless of whether the feature was compiled in. On the real GPU box
 (section 7), `HandBrakeCLI`'s own runtime diagnostic printed
 `nvdec: is not compiled into this build` on every invocation, while this exact
 help text kept listing `nvdec` as a valid option. `handbrake-gpu.sh` originally
 trusted the static text for this one check and logged a false "NVDEC is
-available" line as a result — fixed to ask the running binary's own diagnostic
+available" line as a result, fixed to ask the running binary's own diagnostic
 line instead (`hb_nvdec_compiled_in()`), the same live-probe approach already
 used for the encoder list.
 
 NVDEC is **not** enabled by default by `handbrake-gpu.sh` regardless, on
-purpose — this build does not have it compiled in, and even where a build
+purpose: this build does not have it compiled in, and even where a build
 does, HandBrake's own documentation states that hardware decoding "is usually
 only beneficial for directly feeding an adjacent hardware encoder" and that
 HandBrake "will automatically disable hardware decoding [and] fall back to
@@ -172,7 +172,7 @@ H.265 NVENC 2160p 4K
 
 HandBrake ships its own NVENC-named presets out of the box (alongside AMD
 VCN-named ones, e.g. "AMD VCN hardware accelerated AV1"). `handbrake-gpu.sh`
-never overrides a preset that already names an encoder — see Task 4.
+never overrides a preset that already names an encoder, see Task 4.
 
 ## 5. What the host has to provide
 
@@ -186,13 +186,13 @@ never overrides a preset that already names an encoder — see Task 4.
 
 Source for the capability meanings:
 <https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/docker-specialized.html>
-— `compute` "required for CUDA and OpenCL applications", `utility` "required for
+`compute` is "required for CUDA and OpenCL applications", `utility` "required for
 using nvidia-smi and NVML", `video` "required for using the Video Codec SDK".
 With the variable unset the runtime defaults to `utility,compute`, i.e. **no
 `video`**, which is why NVENC needs it set explicitly.
 
 Source for the driver requirement:
-<https://handbrake.fr/docs/en/latest/technical/video-nvenc.html> — "NVIDIA
+<https://handbrake.fr/docs/en/latest/technical/video-nvenc.html>, "NVIDIA
 Graphics Driver 570.0 or later".
 
 ## 6. What the container checks at start
@@ -200,12 +200,12 @@ Graphics Driver 570.0 or later".
 `handbrake-gpu.sh` refuses to claim hardware encoding it cannot deliver. With
 `GPU_VENDOR=nvidia` it checks, in this order:
 
-1. an NVIDIA device node exists (`/dev/nvidiactl`, `/dev/nvidia0`, …) — proves the
-   container was started through the NVIDIA container runtime;
-2. `libnvidia-encode.so.1` is present — proves `NVIDIA_DRIVER_CAPABILITIES`
+1. an NVIDIA device node exists (`/dev/nvidiactl`, `/dev/nvidia0`, …), which proves
+   the container was started through the NVIDIA container runtime;
+2. `libnvidia-encode.so.1` is present, which proves `NVIDIA_DRIVER_CAPABILITIES`
    includes `video`;
-3. the **running** `HandBrakeCLI` lists an NVENC encoder in a live `--help` call
-   — HandBrake only lists a hardware encoder it can actually use right now, so
+3. the **running** `HandBrakeCLI` lists an NVENC encoder in a live `--help` call.
+   HandBrake only lists a hardware encoder it can actually use right now, so
    this single check covers "the build has NVENC" and "the driver/GPU can serve
    it" at once. The build-time help dump is deliberately not used here: it is
    recorded without a GPU and never lists a hardware encoder.
@@ -234,7 +234,7 @@ docker logs handbrake 2>&1 | grep '\[handbrake-gpu\]'
 ### The container detected the GPU
 
 ```text
-[handbrake-gpu] GPU acceleration: NVIDIA NVENC — NVIDIA GeForce RTX 4070 Ti SUPER, 610.57.04
+[handbrake-gpu] GPU acceleration: NVIDIA NVENC (NVIDIA GeForce RTX 4070 Ti SUPER, 610.57.04)
 [handbrake-gpu] encoder library: /usr/lib64/libnvidia-encode.so.1
 [handbrake-gpu] HandBrakeCLI arguments: --encoder nvenc_h264
 [handbrake-gpu] NOTE: every watch-folder job now encodes with 'nvenc_h264' and overrides the video
@@ -244,7 +244,7 @@ docker logs handbrake 2>&1 | grep '\[handbrake-gpu\]'
 
 ### Why the check is a live probe, measured on this machine
 
-Same container, same binary, same moment — the live encoder list and the
+Same container, same binary, same moment: the live encoder list and the
 build-time dump disagree, because `libhb` filters the live list through
 `hb_nvenc_h264_available()` and the dump was written on a builder with no GPU:
 
@@ -294,7 +294,7 @@ Available --encoder-preset values for 'nvenc_h264' encoder:
     slowest
 ```
 
-Identical to the GPU-less measurement in section 2 — `--encoder-preset-list`
+Identical to the GPU-less measurement in section 2: `--encoder-preset-list`
 resolves by name against the static encoder table, so it does not depend on
 hardware presence.
 
@@ -350,7 +350,7 @@ there for GPU support, following the same conventions as the existing entries
 (pipe-separated `Default` renders as a dropdown; the element body is the value
 that is actually applied).
 
-**1. `ExtraParams` — the NVIDIA runtime.** Users without a GPU must not be forced
+**1. `ExtraParams`, the NVIDIA runtime.** Users without a GPU must not be forced
 to edit this, so `--runtime=nvidia` is documented in the GPU field's description
 rather than baked in:
 
@@ -382,7 +382,7 @@ CPU-only user never sees them:
           Type="Variable" Display="advanced" Required="false" Mask="false">compute,video,utility</Config>
 ```
 
-**4. Overview text** — add one line to the `<Overview>` block:
+**4. Overview text.** Add one line to the `<Overview>` block:
 `• GPU encoding: set GPU Acceleration to nvidia for NVENC hardware transcoding (needs the Nvidia-Driver plugin and --runtime=nvidia).`
 
 After the feed repo is updated, CA needs a re-scan before the new fields show up

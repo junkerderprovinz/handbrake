@@ -30,8 +30,8 @@
 </head>
 <body>
 
-<h1>HandBrake – the full transcoder GUI in your browser, GPU-accelerated on every vendor</h1>
-<p class="subtitle">NVIDIA, Intel and AMD hardware encoding, an automated watch-folder converter, no VNC client — the most complete HandBrake container for Unraid.</p>
+<h1>HandBrake: the full transcoder GUI in your browser, GPU-accelerated on every vendor</h1>
+<p class="subtitle">NVIDIA, Intel and AMD hardware encoding, an automated watch-folder converter, and no VNC client needed.</p>
 
 <p align="center">
   <a href="https://github.com/junkerderprovinz/handbrake">
@@ -48,12 +48,12 @@
 </p>
 
 <h2>What is this?</h2>
-<p>A modern, plug-and-play Docker image for <a href="https://handbrake.fr">HandBrake</a>, the
+<p>A Docker image for <a href="https://handbrake.fr">HandBrake</a>, the
 open-source video transcoder. You get the <strong>full transcoder GUI in your browser</strong>
 via Selkies, <strong>dark by default</strong> using HandBrake's own native GTK dark mode, plus a
 <strong>watch-folder daemon</strong> that transcodes anything dropped into <code>/watch</code>
 without opening the UI at all. <strong>Hardware encoding is supported on all three major GPU
-vendors</strong> — NVIDIA NVENC, Intel Quick Sync and AMD VCE — which no other HandBrake
+vendors</strong>: NVIDIA NVENC, Intel Quick Sync and AMD VCE, which no other HandBrake
 container on Unraid covers. Built on Ubuntu (via
 <a href="https://github.com/linuxserver/docker-baseimage-selkies">linuxserver/baseimage-selkies</a>),
 so NVIDIA's proprietary glibc libraries load without issue, something the Alpine-based community
@@ -62,15 +62,15 @@ config-file editing required.</p>
 
 <h2>Highlights</h2>
 <ul>
-  <li><strong>GPU-accelerated hardware encoding on every major vendor</strong> — NVIDIA NVENC, Intel Quick Sync (QSV) and AMD VCE — the only HandBrake container on Unraid that covers all three</li>
-  <li><strong>Selkies</strong> instead of noVNC — a hybrid VNC/H.264 web desktop with a real bidirectional browser clipboard, native file upload/download, high-DPI ready, no separate VNC client</li>
-  <li><strong>Dark by default</strong> — HandBrake's own native GTK dark mode, not a repaint; switch to light with one variable</li>
-  <li><strong>Automated watch-folder conversion</strong> — drop a file into <code>/watch</code>, get a transcode in <code>/output</code>; <strong>atomic output</strong> so a media scanner never indexes a half-written file</li>
-  <li><strong>5 conversion hooks</strong> — before/after every job, end of a scan pass, per-file custom arguments, and a hook for conversions started manually in the GUI</li>
-  <li><strong>Staging directory</strong> — keep in-progress transcodes off the array while they run, on a cache pool or elsewhere</li>
+  <li><strong>GPU-accelerated hardware encoding on every major vendor</strong>: NVIDIA NVENC, Intel Quick Sync (QSV) and AMD VCE</li>
+  <li><strong>Selkies</strong> instead of noVNC: a hybrid VNC/H.264 web desktop with a real bidirectional browser clipboard, native file upload/download, high-DPI ready, no separate VNC client</li>
+  <li><strong>Dark by default</strong>: HandBrake's own native GTK dark mode, not a repaint; switch to light with one variable</li>
+  <li><strong>Automated watch-folder conversion</strong>: drop a file into <code>/watch</code>, get a transcode in <code>/output</code>; <strong>atomic output</strong> so a media scanner never indexes a half-written file</li>
+  <li><strong>5 conversion hooks</strong>: before/after every job, end of a scan pass, per-file custom arguments, and a hook for conversions started manually in the GUI</li>
+  <li><strong>Staging directory</strong>: keep in-progress transcodes off the array while they run, on a cache pool or elsewhere</li>
   <li><strong>Web file manager</strong>, a <strong>web terminal</strong> (<code>Ctrl+Alt+T</code>) and <strong>desktop notifications</strong>, all built into the browser session</li>
-  <li><strong>Shared-watch-folder locking</strong> — run two containers against one watch folder to convert twice as many files at once, safely</li>
-  <li>Multi-arch — amd64 + arm64, both gated by a CI smoke test that really transcodes a clip before anything is published</li>
+  <li><strong>Shared-watch-folder locking</strong>: run two containers against one watch folder to convert twice as many files at once, safely</li>
+  <li>Multi-arch: amd64 and arm64, both gated by a CI smoke test that really transcodes a clip before anything is published</li>
   <li>Image: <code>ghcr.io/junkerderprovinz/handbrake:latest</code></li>
 </ul>
 
@@ -79,7 +79,7 @@ config-file editing required.</p>
   <li>Unraid 6.10+</li>
   <li>For NVIDIA hardware encoding: the <strong>Nvidia-Driver</strong> plugin (ich777) and <code>--runtime=nvidia</code> in Extra Parameters</li>
   <li>For Intel or AMD hardware encoding: <code>--device=/dev/dri</code> in Extra Parameters, and the host's open-source <code>i915</code>/<code>xe</code> (Intel) or <code>amdgpu</code> (AMD) kernel driver</li>
-  <li>A reverse proxy is optional — the container already serves HTTPS itself on port <code>3001</code> with a self-signed certificate</li>
+  <li>A reverse proxy is optional; the container already serves HTTPS itself on port <code>3001</code> with a self-signed certificate</li>
 </ul>
 
 <h2>Posting a bug report</h2>
@@ -106,7 +106,7 @@ this saves you a trip to a proprietary transcoding tool, you can
 
 <hr>
 
-<p class="footnote">Self-hosted, AGPL-3.0-licensed wrapper around GPL-2.0 HandBrake — you run it, you own your data and the responsibility.</p>
+<p class="footnote">Self-hosted, AGPL-3.0-licensed wrapper around GPL-2.0 HandBrake: you run it, you own your data and the responsibility.</p>
 
 </body>
 </html>

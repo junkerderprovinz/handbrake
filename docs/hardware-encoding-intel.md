@@ -45,7 +45,7 @@ detects it correctly and picks `qsv_h264`:
 ```
 
 The live encoder list on that hardware includes the full QSV set (this build's
-GPU generation supports H.264/H.265 but not AV1 — see section 2):
+GPU generation supports H.264/H.265 but not AV1, see section 2):
 
 ```text
 qsv_av1
@@ -74,7 +74,7 @@ docker exec handbrake grep -A2 -- '- H.264 encoder:' /config/handbrake-watch.log
 HandBrake logs this per-machine capability summary at the start of every job.
 Which of these are `yes` depends on the specific Intel GPU generation; a
 Gen12/Xe iGPU like this one has no AV1 hardware encoder block, so `qsv_av1`
-is *listed* (compiled in) but will not actually encode on this machine — the
+is *listed* (compiled in) but will not actually encode on this machine, the
 same "compiled in but not usable here" distinction the whole live-probe
 architecture exists to catch for the id HandBrake picks (`qsv_h264`).
 
@@ -92,19 +92,19 @@ Encode failed (error 4).
 ```
 
 The encode itself completes at full speed (452 fps average on a 1080p30
-clip in one run) — the failure is entirely in the muxing step, and reproduces
+clip in one run); the failure is entirely in the muxing step, and reproduces
 identically for both `av_mp4` and `av_mkv` output, with the stock
 `General/Very Fast 1080p30` preset, with HandBrake's own `H.265 QSV 1080p`
 hardware preset, and with `bframes=0` forced via `--encopts`. It is not a
 container-format issue, a preset issue, or a B-frame issue in this container's
-configuration — it reproduces with a bare `HandBrakeCLI` invocation.
+configuration; it reproduces with a bare `HandBrakeCLI` invocation.
 
 **This is a known, independently confirmed bug in Ubuntu's specific packaged
 build, not in HandBrake itself.**
 [HandBrake/HandBrake#7962](https://github.com/HandBrake/HandBrake/issues/7962)
 documents another user hitting the **identical** failure on the **identical**
-environment — Ubuntu 26.04 "resolute", `handbrake-cli` 1.11.0 from the Ubuntu
-universe package — and confirms the fix:
+environment (Ubuntu 26.04 "resolute", `handbrake-cli` 1.11.0 from the Ubuntu
+universe package) and confirms the fix:
 
 > Can confirm this reproduces on my system with the distro-packaged build, but
 > building from source fixed it.
@@ -120,7 +120,7 @@ universe package — and confirms the fix:
 
 The maintainer's response to the issue: users are running "an unsupported
 third party version of HandBrake" and should "compile from source to rule
-out any issues caused by bad packaging" — i.e. this is Ubuntu's packaging
+out any issues caused by bad packaging", i.e. this is Ubuntu's packaging
 defect, not something HandBrake's own team is going to chase down.
 
 ## 4. The fix: `handbrake:gpu-full` (optional variant, `Dockerfile.gpu`)
@@ -139,16 +139,16 @@ hardware, same 180 s / 1920x1080 / 30 fps clip used for the NVENC comparison
 
 No DTS errors, no mux failure. The output decodes cleanly (`ffmpeg -i ... -f
 null -`) and reports `codec_name=h264, width=1920, height=1080,
-nb_frames=5400` — exactly 180 s × 30 fps.
+nb_frames=5400`, exactly 180 s × 30 fps.
 
 | Build | Encoder | Wall clock | Output size |
 |---|---|---|---|
-| Ubuntu package (`handbrake:gpu`) | `qsv_h264` | fails at mux | — |
+| Ubuntu package (`handbrake:gpu`) | `qsv_h264` | fails at mux | n/a |
 | Source build (`handbrake:gpu-full`) | `qsv_h264` | `12` s | `3.6 MB` |
 | Software (`handbrake:gpu`, `GPU_VENDOR=none`) | x264 | `27` s | `3.2 MB` |
 
 QSV via the source-built binary is comparable in speed to NVENC (`11` s on
-the same clip on this machine's RTX 4070 Ti SUPER — see
+the same clip on this machine's RTX 4070 Ti SUPER, see
 `docs/hardware-encoding-nvidia.md`) and roughly 2.25x faster than software on
 this CPU.
 
@@ -162,7 +162,7 @@ not published, not CI-gated, `just build-gpu-full`).
 ## 5. What still cannot be verified here
 
 AMD VCE (the other reason `Dockerfile.gpu` exists) has no hardware to test on
-in this environment — see `docs/handbrake-capabilities.md`'s "Optional
+in this environment, see `docs/handbrake-capabilities.md`'s "Optional
 full-GPU build variant" section for what was verified without AMD hardware
 (the AMF code path is compiled in) and what was not (whether it actually
 encodes). Other Intel GPU generations (older Gen9-11, or newer Arc

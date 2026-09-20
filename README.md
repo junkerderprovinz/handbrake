@@ -72,8 +72,8 @@ If it has earned a place on your server or computer, toss a coin to your knight:
 
 ## 1. Overview
 
-This image packages [HandBrake](https://handbrake.fr) — the open-source video
-transcoder — into a self-contained Docker container that runs in any modern web
+This image packages [HandBrake](https://handbrake.fr), the open-source video
+transcoder, into a self-contained Docker container that runs in any modern web
 browser. It is built on
 [`linuxserver/baseimage-selkies`](https://github.com/linuxserver/docker-baseimage-selkies),
 so it inherits LSIO's actively maintained Selkies desktop-streaming stack (a
@@ -82,16 +82,16 @@ HandBrake-specific is layered on top here.
 
 What you get beyond bare HandBrake:
 
-- **Selkies instead of noVNC** — a hybrid VNC/H.264 pipeline for a smooth web
+- **Selkies instead of noVNC**: a hybrid VNC/H.264 pipeline for a smooth web
   desktop, real bidirectional browser clipboard, native file upload and
   download, high-DPI ready
-- **Dark by default** — HandBrake's own native GTK dark mode, not a repaint;
+- **Dark by default**: HandBrake's own native GTK dark mode, not a repaint;
   switch to light with one variable
-- **Watch-folder automation** — drop a file into `/watch`, get a transcode in
+- **Watch-folder automation**: drop a file into `/watch`, get a transcode in
   `/output`, no GUI interaction
-- **Atomic output** — conversions are written to a hidden `.partial` file and
+- **Atomic output**: conversions are written to a hidden `.partial` file and
   renamed on success, so a media scanner never indexes a half-written video
-- **Multi-arch** — amd64 and arm64, both gated by a CI smoke test that really
+- **Multi-arch**: amd64 and arm64, both gated by a CI smoke test that really
   transcodes a clip before anything is published
 
 Another HandBrake container is also in Community Applications:
@@ -170,7 +170,7 @@ log on the very first start.
 |---|---|---|
 | `/config` | rw | HandBrake presets, queue, logs and container state |
 | `/storage` | ro | Media you want to browse from inside the GUI |
-| `/watch` | rw | Watch folder — anything dropped here is converted automatically |
+| `/watch` | rw | Watch folder; anything dropped here is converted automatically |
 | `/watch2` … `/watch5` | rw | Additional watch folders (optional) |
 | `/output` | rw | Where converted files are written |
 
@@ -191,13 +191,13 @@ log on the very first start.
 | `UMASK` | `000` | File-mode mask for everything the container creates. Keeps new files writable for other containers on the same shares |
 | `TZ` | `Etc/UTC` | Container timezone |
 | `LANG` | `en_US.UTF-8` | Locale, also drives HandBrake's UI language |
-| `HANDBRAKE_THEME` | `dark` | `dark` or `light` — see [Dark Mode](#7-dark-mode) |
+| `HANDBRAKE_THEME` | `dark` | `dark` or `light`, see [Dark Mode](#7-dark-mode) |
 | `APP_NICENESS` | `0` | `nice` level (0-19) for the GUI and every transcode |
 | `KEYBOARD_LAYOUT` | `us` | X keyboard layout loaded at session start |
-| `GPU_VENDOR` | `none` | `none`, `nvidia`, `intel` or `amd` — see [Hardware Encoding](#8-hardware-encoding) |
+| `GPU_VENDOR` | `none` | `none`, `nvidia`, `intel` or `amd`, see [Hardware Encoding](#8-hardware-encoding) |
 | `CUSTOM_USER` / `PASSWORD` | empty | Set both to require a login on the WebUI; empty means no login |
 | `CUSTOM_PORT` / `CUSTOM_HTTPS_PORT` | `3000` / `3001` | Internal WebUI ports |
-| `INSTALL_LIBDVDCSS` | `false` | `true` builds `libdvdcss` on first start for encrypted DVDs — see [Optical Drives](#12-optical-drives) |
+| `INSTALL_LIBDVDCSS` | `false` | `true` builds `libdvdcss` on first start for encrypted DVDs, see [Optical Drives](#12-optical-drives) |
 
 ### Screen size and memory use
 
@@ -261,7 +261,7 @@ How it behaves:
   refuses to convert anything instead of failing every file one by one. The GUI
   keeps working.
 - Processed sources are remembered in
-  `/config/handbrake/watch-state/done.list` by path, size and mtime — an
+  `/config/handbrake/watch-state/done.list` by path, size and mtime, so an
   unchanged source is never converted twice, an edited or re-copied one is.
 - A failed job is recorded in `failed.list` and is not retried until the source
   changes. The full `HandBrakeCLI` output for every job is in
@@ -272,13 +272,13 @@ How it behaves:
 ## 7. Dark Mode
 
 `HANDBRAKE_THEME=dark` (the default) applies HandBrake's own native GTK dark
-mode — the stock Adwaita dark theme that ships inside GTK 4, exactly what
+mode, the stock Adwaita dark theme that ships inside GTK 4, exactly what
 HandBrake uses on any Linux desktop set to dark. Nothing is repainted or
 restyled. `HANDBRAKE_THEME=light` switches to the light variant.
 
 One consequence worth knowing: the container sets `GTK_THEME`, which GTK reads
 before it looks at any in-app preference. HandBrake's own light/dark toggle in
-the UI therefore has no visible effect here — `HANDBRAKE_THEME` is the single
+the UI therefore has no visible effect here; `HANDBRAKE_THEME` is the single
 source of truth. Change it in the template and restart the container.
 
 <br>
@@ -324,7 +324,7 @@ SUPER, Unraid).
 
 `NVIDIA_DRIVER_CAPABILITIES` matters more than it looks: with the variable unset
 the NVIDIA runtime defaults to `utility,compute`, which does **not** include
-`video` — and `video` is the capability that injects `libnvidia-encode.so.1`,
+`video`, and `video` is the capability that injects `libnvidia-encode.so.1`,
 the library NVENC actually calls.
 
 Plain Docker:
@@ -348,12 +348,12 @@ docker run -d \
 #### What it changes
 
 - **Watch-folder jobs only.** `GPU_VENDOR` adds `--encoder nvenc_h264` to every
-  automated conversion. In the GUI you pick the encoder yourself — the NVENC
+  automated conversion. In the GUI you pick the encoder yourself; the NVENC
   entries appear in HandBrake's own encoder list as soon as the GPU is passed in.
 - **H.264 by default, on purpose.** The default preset is an x264 preset, so
   `nvenc_h264` keeps the delivered codec identical and only swaps the encoder.
   For HEVC, set
-  `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS=--encoder nvenc_h265` — custom args
+  `AUTOMATED_CONVERSION_HANDBRAKE_CUSTOM_ARGS=--encoder nvenc_h265`; custom args
   are appended last, so they win. `nvenc_av1` and `nvenc_av1_10bit` are compiled
   in too (confirmed in `docs/hardware-encoding-nvidia.md`); the watch-folder seam
   does not pick AV1 automatically since not every player supports it yet, but
@@ -363,7 +363,7 @@ docker run -d \
   not override its encoder.
 - **Speed presets.** NVENC does not understand x264 speed names such as
   `veryfast`; HandBrake substitutes its own default. To control the tradeoff
-  yourself, add `--encoder-preset <name>` to the custom args — the valid names
+  yourself, add `--encoder-preset <name>` to the custom args; the valid names
   are listed by
   `docker exec handbrake HandBrakeCLI --encoder-preset-list nvenc_h264`.
 - **Hardware decoding (NVDEC) stays off.** HandBrake disables hardware decoding
@@ -413,7 +413,7 @@ not a bug in this container or in HandBrake itself.
 
 **The fix ships as an optional variant image.** Build `handbrake:gpu-full`
 (`Dockerfile.gpu`, `just build-gpu-full`, 30-60 minutes on 8 cores, amd64
-only, not published) — it rebuilds `HandBrakeCLI` from source with
+only, not published). It rebuilds `HandBrakeCLI` from source with
 `--enable-qsv`, which fixes the bug completely. Verified end to end: a 180 s
 1080p30 clip encodes in 12 s with `qsv_h264` on this hardware (27 s in
 software on the same CPU), with no mux errors, and the output decodes
@@ -445,7 +445,7 @@ Notes worth knowing:
   a log line saying so.
 - Which encoders your specific GPU generation actually supports (H.264/H.265
   are broadly supported; AV1 needs a newer generation) is logged by HandBrake
-  itself at the start of every job — see
+  itself at the start of every job, see
   [`docs/hardware-encoding-intel.md`](docs/hardware-encoding-intel.md) section 2.
 
 ### AMD VCE
@@ -503,7 +503,7 @@ transcode runs at software speed, that is what is happening; there is no fix
 available today other than waiting for HandBrake's VA-API encoders.
 
 **AMD VCE is unverified.** There is no AMD GPU here to test the actual encode
-on — see the Community Verification section below.
+on, see the Community Verification section below.
 
 ### What the container tells you
 
@@ -534,13 +534,13 @@ docker exec handbrake cat /run/handbrake/gpu-args    # empty means software enco
 **AMD VCE in this image is implemented against AMD's and HandBrake's own
 documentation. It has not been verified on real hardware by the maintainer,
 because there is no AMD GPU here to test on.** NVIDIA and Intel both have a
-card behind them now — see the table above. Every part that could be tested
+card behind them now, see the table above. Every part that could be tested
 without AMD hardware has been: the runtime libraries are asserted in CI, the
 encoder selection logic is exercised in CI on GPU-less runners, and the
 fallback path is checked on both architectures.
 
 What is missing is somebody with actual AMD hardware saying whether a file
-comes out the other end faster — and, since Intel Quick Sync varies a lot by
+comes out the other end faster. Since Intel Quick Sync varies a lot by
 GPU generation, a confirmation on hardware other than a Gen12/Xe iGPU
 (older Gen9-11, or a discrete Arc card) is useful too.
 
@@ -598,7 +598,7 @@ this image wires up automatically, so there is nothing to configure beyond
 copying the `.example` file. The contract is narrower, because it is genuinely
 all HandBrake's GUI hands over: `$1` is the finished output file only, no
 source path, no preset, and it only fires on a successful encode. This wiring
-activates from the **second** container start onward — on a brand-new
+activates from the **second** container start onward. On a brand-new
 `/config`, HandBrake has not created its own preferences file yet on the
 first boot, and this image only ever patches an existing one rather than
 overwriting HandBrake's real defaults.
@@ -765,7 +765,7 @@ yours, which is why nothing happens unless you set the variable.
 ## 13. Migrating from jlesage/handbrake
 
 - Ports change: `5800`/`5900` become `3000` (HTTP) and `3001` (HTTPS). There is
-  no direct VNC port — Selkies is the only access path, by design.
+  no direct VNC port; Selkies is the only access path, by design.
 - All `AUTOMATED_CONVERSION*` variables keep their names and defaults, so you can
   copy those values over unchanged.
 - `/config/hooks/` keeps its name and its argument order, so existing hook
@@ -817,7 +817,7 @@ has drawn its window. Wait for `HANDBRAKE IS READY` in `docker logs handbrake`.
 
 **Nothing in `/watch` gets converted.** Check `docker logs handbrake` for
 `[handbrake-watch]` lines. The most common cause is a watch or output folder the
-container user cannot write — the init log says so explicitly:
+container user cannot write; the init log says so explicitly:
 `WARNING: watch folder /watch is NOT writable by the container user`. Fix the
 share owner on the host (`chown nobody:users /mnt/user/<share>`).
 
@@ -857,7 +857,7 @@ runtime leaves `video` out, and `video` is what injects the encoder library.
 **The log says HandBrakeCLI "offers none of" the NVENC encoders.** The GPU and
 the driver library are both there, but HandBrake itself will not use NVENC on
 this machine. HandBrake only lists a hardware encoder it can currently use, so
-the usual cause is an NVIDIA driver older than HandBrake's minimum — update the
+the usual cause is an NVIDIA driver older than HandBrake's minimum. Update the
 Nvidia-Driver plugin. The log line `Encoders HandBrakeCLI offers here:` shows
 exactly what it did find.
 
@@ -868,8 +868,8 @@ grep -i nvenc /mnt/user/appdata/handbrake/handbrake-watch.log | tail -n 5
 ```
 
 If the job log names a software encoder, your preset is a hardware preset the
-container deliberately did not override, or your custom args set `--encoder`
-themselves — custom args are applied last and win.
+container did not override, or your custom args set `--encoder` themselves;
+custom args are applied last and win.
 
 **`/files/` is empty or returns 404.** Check the startup log:
 `docker logs handbrake 2>&1 | grep handbrake-web`. Every published folder is
@@ -908,7 +908,7 @@ docker exec handbrake cat /etc/handbrake-build
 ## 16. License
 
 This wrapper is AGPL-3.0-only (see [`LICENSE`](LICENSE)). HandBrake itself is
-GPL-2.0 and its artwork is CC BY-SA 4.0 — every bundled component and its
+GPL-2.0 and its artwork is CC BY-SA 4.0. Every bundled component and its
 licence is listed in [`NOTICE`](NOTICE).
 
 <br>
