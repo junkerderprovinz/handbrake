@@ -5,8 +5,8 @@
 # provides, instead of reimplementing a file manager, a terminal, a clipboard
 # bridge or an auth layer:
 #
-#   WEB_FILE_MANAGER*  -> FILE_MANAGER_PATH, SELKIES_FILE_TRANSFERS,
-#                         SELKIES_UPLOAD_DIR and nginx deny locations
+#   WEB_FILE_MANAGER*  -> an nginx /files/ location with deny locations,
+#                         FILE_MANAGER_PATH and SELKIES_FILE_TRANSFERS
 #   WEB_TERMINAL*      -> DISABLE_TERMINALS and an openbox keybind
 #   WEB_NOTIFICATION   -> a themed dunstrc (dunst itself is started by
 #                         /defaults/autostart, inside the desktop session)
@@ -22,14 +22,15 @@
 # Two phases, because the base consumes some of these before it writes the
 # nginx config and produces others only afterwards:
 #
-#   pre-nginx     runs from init-handbrake-web before the base's init-nginx,
-#                 which substitutes $FILE_MANAGER_PATH into
-#                 /etc/nginx/sites-available/default and deletes the whole
-#                 files{} block when SELKIES_FILE_TRANSFERS has no "download".
+#   pre-nginx     runs from init-handbrake-web before the base's init-nginx and
+#                 sets the environment Selkies reads: FILE_MANAGER_PATH is where
+#                 the sidebar uploads to and what it serves, and an empty
+#                 SELKIES_FILE_TRANSFERS turns both off.
 #   post-config   runs from init-handbrake-web-post after the base's
 #                 init-selkies-config, which restores /etc/xdg/openbox/rc.xml
 #                 from its .bak on every start and would drop an earlier
-#                 keybind. The nginx config also exists only after init-nginx.
+#                 keybind. The nginx config exists only after init-nginx, so
+#                 the /files/ location is added here.
 #
 # All logging goes to stderr because resolve_allowed() prints its result on
 # stdout.
@@ -144,11 +145,12 @@ farm_name() {
     printf '%s' "${n}"
 }
 
-# The base's nginx block serves exactly one directory. A tree of symlinks under
+# The /files/ location serves exactly one directory. A tree of symlinks under
 # that one directory is what turns it into the multi-path file manager jlesage
 # exposes. nginx follows symlinks by default (disable_symlinks is off), and the
 # farm lives on tmpfs so it is rebuilt from scratch on every start and can never
-# go stale.
+# go stale. Selkies' own file API resolves symlinks and refuses anything outside
+# its root, which is why the farm is served by nginx and not by Selkies.
 build_farm() {
     rm -rf -- "${FARM_ROOT}"
     mkdir -p -- "${FARM_ROOT}"
@@ -249,13 +251,14 @@ phase_pre_nginx() {
 
     if truthy "${WEB_FILE_MANAGER:-1}"; then
         build_farm
-        set_env FILE_MANAGER_PATH "${FARM_ROOT}"
-        set_env SELKIES_UPLOAD_DIR "$(pick_upload_dir)"
-        log "file manager: ON at /files/, uploads go to $(cat /run/s6/container_environment/SELKIES_UPLOAD_DIR)"
+        local upload
+        upload="$(pick_upload_dir)"
+        set_env FILE_MANAGER_PATH "${upload}"
+        log "file manager: ON at /files/, the sidebar uploads to ${upload}"
     else
-        # Removing "download" from SELKIES_FILE_TRANSFERS makes the base delete
-        # the whole nginx files{} block, and SELKIES_UI_SIDEBAR_SHOW_FILES=false
-        # hides the sidebar's upload panel.
+        # An empty SELKIES_FILE_TRANSFERS turns off Selkies' own upload and
+        # download, SELKIES_UI_SIDEBAR_SHOW_FILES=false hides the sidebar panel,
+        # and /files/ is only added while the file manager is on.
         set_env SELKIES_FILE_TRANSFERS ""
         set_env SELKIES_UI_SIDEBAR_SHOW_FILES "false"
         rm -rf -- "${FARM_ROOT}"
@@ -281,18 +284,30 @@ phase_pre_nginx() {
     fi
 }
 
-apply_nginx_denies() {
+apply_file_manager() {
     local raw="${WEB_FILE_MANAGER_DENIED_PATHS:-}"
     truthy "${WEB_FILE_MANAGER:-1}" || return 0
-    [ -n "${raw}" ] || return 0
     if [ ! -f "${NGINX_CONFIG}" ]; then
-        log "WARNING: ${NGINX_CONFIG} is missing, so denied paths cannot be applied"
+        log "WARNING: ${NGINX_CONFIG} is missing, so /files/ cannot be served"
         return 0
     fi
 
-    local sub blocks="" d name p rel uri matched closers
+    local sub blocks d name p rel uri matched closers
     sub="${SUBFOLDER:-/}"
     sub="${sub%/}"
+
+    # The trailing slash on the location matters: "location /files" with an
+    # alias ending in "/" would let /files../x climb out of the farm.
+    blocks="  location = \"${sub}/files\" { return 301 ${sub}/files/; }"$'\n'
+    blocks="${blocks}  location ^~ \"${sub}/files/\" {"$'\n'
+    blocks="${blocks}    alias ${FARM_ROOT}/;"$'\n'
+    blocks="${blocks}    fancyindex on;"$'\n'
+    blocks="${blocks}    fancyindex_exact_size off;"$'\n'
+    blocks="${blocks}    if (-f \$request_filename) {"$'\n'
+    blocks="${blocks}      add_header Content-Disposition \"attachment\";"$'\n'
+    blocks="${blocks}      add_header X-Content-Type-Options \"nosniff\";"$'\n'
+    blocks="${blocks}    }"$'\n'
+    blocks="${blocks}  }"$'\n'
 
     while IFS= read -r d; do
         d="${d%/}"
@@ -322,27 +337,24 @@ apply_nginx_denies() {
     # which would lose a single denied path.
     done < <(printf '%s\n' "${raw}" | tr ',' '\n')
 
-    [ -n "${blocks}" ] || return 0
-
     # The generated config ends each of its two server blocks with a "}" in
     # column 1 and indents everything else. If that ever stops being true the
     # base changed its template and the insertion point is no longer safe.
     closers="$(grep -c '^}$' "${NGINX_CONFIG}" || true)"
     if [ "${closers}" != "2" ]; then
         log "ERROR: expected 2 server blocks in ${NGINX_CONFIG} but found ${closers}."
-        log "       The Selkies base changed its nginx template; denied paths were not applied."
-        log "       Set WEB_FILE_MANAGER=0 until this is fixed if the denied paths are load-bearing."
+        log "       The Selkies base changed its nginx template; /files/ was not added."
         return 0
     fi
 
     cp -a "${NGINX_CONFIG}" "${NGINX_CONFIG}.hb-bak"
-    HB_DENY_BLOCKS="${blocks}" awk '/^}$/ { printf "%s", ENVIRON["HB_DENY_BLOCKS"] } { print }' \
+    HB_FM_BLOCKS="${blocks}" awk '/^}$/ { printf "%s", ENVIRON["HB_FM_BLOCKS"] } { print }' \
         "${NGINX_CONFIG}.hb-bak" > "${NGINX_CONFIG}"
     if nginx -t >/dev/null 2>&1; then
-        log "denied paths applied to both server blocks"
+        log "file manager served at ${sub}/files/ in both server blocks"
     else
         cp -a "${NGINX_CONFIG}.hb-bak" "${NGINX_CONFIG}"
-        log "ERROR: nginx rejected the generated denied-path rules, reverted to the base config."
+        log "ERROR: nginx rejected the /files/ location, reverted to the base config."
         nginx -t 2>&1 | sed 's/^/[handbrake-web]   /' >&2
     fi
 }
@@ -390,7 +402,7 @@ apply_terminal_keybind() {
 }
 
 phase_post_config() {
-    apply_nginx_denies
+    apply_file_manager
     apply_terminal_keybind
 }
 

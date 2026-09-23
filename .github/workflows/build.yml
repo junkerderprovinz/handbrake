@@ -286,8 +286,8 @@ jobs:
             || fail "the file-manager farm is missing the /output or /watch symlink"
           $CURL https://localhost:3101/files/ | grep -q 'output' \
             || fail "/files/ does not list the output folder"
-          upload=$(docker exec "$name" cat /run/s6/container_environment/SELKIES_UPLOAD_DIR 2>/dev/null || echo "")
-          [ "$upload" = "/watch" ] || fail "expected uploads to land in /watch, got '${upload}'"
+          upload=$(docker exec "$name" cat /run/s6/container_environment/FILE_MANAGER_PATH 2>/dev/null || echo "")
+          [ "$upload" = "/watch" ] || fail "expected sidebar uploads to land in /watch, got '${upload}'"
 
           echo "== denied paths =="
           docker exec "$name" sh -c 'mkdir -p /output/private /output/publicish; echo x > /output/private/secret.txt; echo y > /output/publicish/ok.txt'
