@@ -11,7 +11,7 @@
 # flavors; ubunturesolute (Ubuntu 26.04 LTS) matches krusader and jdownloader.
 # Its universe component carries HandBrake 1.11, fresher than the official
 # handbrake-releases PPA, which has published nothing past focal.
-ARG BASE_TAG=ubunturesolute@sha256:468108db1ab73d876a718d40addbff0509bf29be413dae6b8da680bba109affd
+ARG BASE_TAG=ubunturesolute@sha256:6cfa54196b6e0dade64f5e51517fd12c4275ceda7519c0e18ad168cb4508c050
 
 FROM ghcr.io/linuxserver/baseimage-selkies:${BASE_TAG}
 
@@ -25,17 +25,9 @@ LABEL org.opencontainers.image.vendor="junkerderprovinz"
 # TITLE feeds the PWA manifest and SELKIES_UI_TITLE the tab and sidebar title;
 # this base needs both.
 #
-# Selkies enables basic auth by default with the well-known ubuntu / mypasswd
-# credentials, which would show a login on a container that never set a
-# password. init-nologin also drops an empty PASSWORD and CUSTOM_USER before
-# nginx starts, so Unraid's blank template fields cannot turn into a login
-# prompt; a real CUSTOM_USER/PASSWORD still enables nginx basic auth.
-#
-# MAX_RES has no default here. Xvfb allocates the whole framebuffer up front,
-# about 4 bytes per pixel, so the base default of 15360x8640 costs 530 MB before
-# anything runs. The template offers a preset dropdown (MAX_RES) and a free
-# field (MAX_RES_CUSTOM), and init-screen-size settles the two before svc-xorg
-# reads them.
+# Selkies turns basic auth on by default and will not start without a password,
+# so SELKIES_ENABLE_BASIC_AUTH=false keeps a container without one free of a
+# login; a real CUSTOM_USER/PASSWORD still enables nginx basic auth.
 #
 # RESTART_APP stays off, unlike the sibling Selkies images: rootfs/defaults/
 # autostart supervises the GUI itself with a fast-exit counter and a capped
@@ -156,15 +148,15 @@ RUN set -eux; \
 
 COPY rootfs/ /
 
-# rootfs/ ships svc-xorg/dependencies.d/init-screen-size so the oneshot settles
-# MAX_RES before Xvfb reads it. If a base update renamed svc-xorg, the COPY above
+# rootfs/ ships svc-xorg/dependencies.d/init-dpi so the oneshot settles the DPI
+# before Xvfb starts. If a base update renamed svc-xorg, the COPY above
 # would create a service directory with no `type` file, s6-rc-compile would
 # abort and every container would exit at boot while the build stays green.
 # Checking for the base's own `type` file turns that into a build error.
 RUN set -eux; \
     t=/etc/s6-overlay/s6-rc.d/svc-xorg/type; \
-    [ -f "$t" ] || { echo "ERROR: $t missing, the selkies base renamed or dropped svc-xorg; re-point rootfs/etc/s6-overlay/s6-rc.d/svc-xorg/dependencies.d/init-screen-size at the new service"; exit 1; }; \
-    echo "handbrake: screen-size oneshot ordered before svc-xorg"
+    [ -f "$t" ] || { echo "ERROR: $t missing, the selkies base renamed or dropped svc-xorg; re-point rootfs/etc/s6-overlay/s6-rc.d/svc-xorg/dependencies.d/init-dpi at the new service"; exit 1; }; \
+    echo "handbrake: dpi oneshot ordered before svc-xorg"
 
 # Init-log banner. tr drops Windows CR bytes so the block characters render
 # whichever editor saved the file.
@@ -198,8 +190,6 @@ RUN set -eux; \
 # a second reminder that it is not a live hook.
 RUN chmod +x \
     /usr/local/bin/print-banner.sh \
-    /usr/local/bin/selkies-resolution.sh \
-    /etc/s6-overlay/s6-rc.d/init-screen-size/run \
     /etc/s6-overlay/s6-rc.d/init-dpi/run \
     /usr/local/bin/handbrake-theme.sh \
     /usr/local/bin/handbrake-gpu.sh \
@@ -208,7 +198,6 @@ RUN chmod +x \
     /usr/local/bin/handbrake-terminal.sh \
     /usr/local/bin/handbrake-notify.sh \
     /usr/local/bin/handbrake-gui-hook.sh \
-    /etc/s6-overlay/s6-rc.d/init-nologin/run \
     /etc/s6-overlay/s6-rc.d/init-handbrake/run \
     /etc/s6-overlay/s6-rc.d/init-handbrake-libdvdcss/run \
     /etc/s6-overlay/s6-rc.d/init-handbrake-web/run \
