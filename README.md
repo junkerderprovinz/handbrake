@@ -185,8 +185,6 @@ log on the very first start.
 
 | Variable | Default | Description |
 |---|---|---|
-| `MAX_RES` | `15360x8640` | Virtual screen the container serves, picked from a dropdown of presets in the template. This is where most of the container's memory goes, see below. |
-| `MAX_RES_CUSTOM` | *(empty)* | Your own `WIDTHxHEIGHT` instead of a preset, e.g. `3440x1440`. Wins over `MAX_RES` when set. |
 | `PUID` / `PGID` | `911` | User and group the container runs as (Unraid: `99` / `100`) |
 | `UMASK` | `000` | File-mode mask for everything the container creates. Keeps new files writable for other containers on the same shares |
 | `TZ` | `Etc/UTC` | Container timezone |
@@ -201,21 +199,10 @@ log on the very first start.
 
 ### Screen size and memory use
 
-The X server reserves its whole virtual framebuffer up front, at roughly **4 bytes per pixel**, no
-matter how big your browser window actually is. At the full `15360x8640` that is 530 MB before
-anything else runs, which is most of what this container uses at idle.
-
-The image ships that full size, so every resolution stays available. If you would rather have the
-RAM back, pick a smaller screen in the template: the dropdown lists sizes from 1080p upwards with
-the cost of each, and the free field next to it takes anything not in the list. A value that is not
-a `WIDTHxHEIGHT` pair is ignored with a note in the container log rather than stopping the
-container.
-
-Pick a size at least as big as the largest browser window you open the WebUI in. A bigger window
-does not get a bigger desktop: the desktop keeps its last size in the top-left corner and the rest
-of the window stays black. This image streams at the size your browser reports, so a 1600x1000
-window on a laptop set to 200 % counts as 1600x1000. With HiDPI switched on in the Selkies sidebar
-the same window counts in physical pixels, 3200x2000.
+The desktop follows your browser window: Selkies resizes the screen to the size the browser
+reports, so there is no screen size to set and memory only grows with the window you actually use.
+A 1600x1000 window on a laptop set to 200 % counts as 1600x1000. With HiDPI switched on in the
+Selkies sidebar the same window counts in physical pixels, 3200x2000.
 
 <br>
 

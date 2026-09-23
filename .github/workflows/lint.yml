@@ -22,16 +22,6 @@ jobs:
           ignore: DL3008,DL3009
           failure-threshold: warning
 
-  screen-size-tests:
-    name: Screen size behaviour
-    runs-on: ubuntu-latest
-    # A hung test would otherwise hold the runner for the 6 h default.
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Run behaviour tests
-        run: bash tests/test-selkies-resolution.sh
-
   shellcheck:
     name: ShellCheck (shipped scripts)
     runs-on: ubuntu-latest
