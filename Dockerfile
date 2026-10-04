@@ -11,7 +11,7 @@
 # flavors; ubunturesolute (Ubuntu 26.04 LTS) matches krusader and jdownloader.
 # Its universe component carries HandBrake 1.11, fresher than the official
 # handbrake-releases PPA, which has published nothing past focal.
-ARG BASE_TAG=ubunturesolute@sha256:f5f62de1c88deea345cb95bd21efe64e67eeb47862ecceeb85808d8ec9ed19a4
+ARG BASE_TAG=ubunturesolute@sha256:9f3221922afff0ed9b451e39e13055446fd3f6d1964d1c6ee810dacdea8ad6bc
 
 FROM ghcr.io/linuxserver/baseimage-selkies:${BASE_TAG}
 
