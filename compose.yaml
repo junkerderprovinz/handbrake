@@ -7,7 +7,7 @@
 
 services:
   handbrake:
-    image: junkerderprovinz/handbrake:latest
+    image: junkerderprovinz/handbrake:latest@sha256:fac827dd8e45aaa2bbc550c0dc275719bc1eb7b975f08b2478db0402b566cd2f
     container_name: handbrake
     restart: unless-stopped
     shm_size: 1gb
