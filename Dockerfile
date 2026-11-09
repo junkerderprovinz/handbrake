@@ -146,6 +146,14 @@ RUN set -eux; \
     mkdir -p /storage /watch /watch2 /watch3 /watch4 /watch5 /output /staging; \
     chmod 0777 /watch /watch2 /watch3 /watch4 /watch5 /output /staging
 
+# The base serves the web client without a cache header, so browsers keep the
+# page for days and show a black "connecting" screen while the container is
+# stopped. no-cache makes every load ask the container first.
+RUN set -eux; \
+    conf=/defaults/default.conf; \
+    grep -q 'location SUBFOLDER {' "$conf"; \
+    sed -i 's|^\( *\)location SUBFOLDER {|&\n\1  add_header Cache-Control "no-cache" always;|' "$conf"
+
 COPY rootfs/ /
 
 # rootfs/ ships svc-xorg/dependencies.d/init-dpi so the oneshot settles the DPI
