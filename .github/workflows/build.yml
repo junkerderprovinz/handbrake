@@ -10,7 +10,8 @@ on:
   push:
     branches: [ main ]
     tags: [ 'v*.*.*' ]
-  # Weekly, to pick up updates of the Selkies base.
+  # Weekly and on demand, the newest release is rebuilt without the layer
+  # cache to pick up updates of the Selkies base.
   schedule:
     - cron: '0 4 * * 0'
   workflow_dispatch:
@@ -19,7 +20,30 @@ env:
   IMAGE_NAME: handbrake
 
 jobs:
+  # Rebuilds refresh the newest release, which is what people run, not the
+  # tip of main.
+  release:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.newest.outputs.tag }}
+      sha: ${{ steps.newest.outputs.sha }}
+    steps:
+      - name: Find the newest release
+        id: newest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          echo "rebuilding $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: release
+    if: ${{ !failure() && !cancelled() }}
     strategy:
       fail-fast: true
       matrix:
@@ -39,6 +63,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.release.outputs.tag }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -66,9 +92,10 @@ jobs:
           load: true
           tags: handbrake:smoke-${{ matrix.arch }}
           build-args: |
-            BUILD_SHA=${{ github.sha }}
+            BUILD_SHA=${{ needs.release.outputs.sha || github.sha }}
             BUILD_DATE=${{ github.event.repository.updated_at }}
           cache-from: type=gha,scope=build-${{ matrix.arch }}
+          no-cache: ${{ needs.release.outputs.tag != '' }}
 
       # A green build only proves the image builds. This proves it boots, serves
       # the WebUI, keeps the GUI alive, applies the dark theme and transcodes.
@@ -582,11 +609,12 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            BUILD_SHA=${{ github.sha }}
+            BUILD_SHA=${{ needs.release.outputs.sha || github.sha }}
             BUILD_DATE=${{ github.event.repository.updated_at }}
           outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=build-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=build-${{ matrix.arch }}
+          no-cache: ${{ needs.release.outputs.tag != '' }}
 
       - name: Export digest
         run: |
@@ -603,7 +631,8 @@ jobs:
           retention-days: 1
 
   merge:
-    needs: build
+    needs: [ release, build ]
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -671,18 +700,17 @@ jobs:
             latest=false
           # `latest` is the newest released version: the tag condition keeps
           # unreleased main out of it, and the newest condition above keeps a
-          # re-cut of an older tag from pulling it backwards. The tip of main
-          # and the weekly rebuild answer to `edge`.
+          # re-cut of an older tag from pulling it backwards. A rebuild of the
+          # newest release moves it too. The tip of main answers to `edge`.
           tags: |
-            type=ref,event=branch
+            type=ref,event=branch,enable=${{ needs.release.outputs.tag == '' }}
             type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=schedule,pattern=weekly
-            type=raw,value=edge,enable={{is_default_branch}}
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && steps.newest.outputs.is_newest == 'true' }}
-            type=sha,format=short
+            type=semver,pattern={{version}},value=${{ needs.release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ needs.release.outputs.tag }}
+            type=raw,value=edge,enable=${{ github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch && needs.release.outputs.tag == '' }}
+            type=raw,value=latest,enable=${{ (github.ref_type == 'tag' && steps.newest.outputs.is_newest == 'true') || needs.release.outputs.tag != '' }}
+            type=sha,format=short,enable=${{ needs.release.outputs.tag == '' }}
 
       - name: Create multi-arch manifests
         working-directory: /tmp/digests
