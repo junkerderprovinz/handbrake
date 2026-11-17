@@ -32,7 +32,7 @@
 #
 #   docker build -f Dockerfile.gpu -t handbrake:gpu-full .
 #
-ARG BASE_IMAGE=ghcr.io/junkerderprovinz/handbrake:latest@sha256:b121d1e84650ca1d7eb9149317a3e397005ca2df5879b6974ceb918c8cfb77f6
+ARG BASE_IMAGE=ghcr.io/junkerderprovinz/handbrake:latest@sha256:0f81a754a88e15e70388666de4c83846b160a4bccb39e0f5ddeaa8af1573f719
 ARG HANDBRAKE_TAG=1.11.2
 
 # The builder is the same image as the runtime stage, so glibc and every system
