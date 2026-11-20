@@ -14,6 +14,13 @@
         "junkerderprovinz/handbrake"
       ],
       "enabled": false
+    },
+    {
+      "description": "CI builds only the main Dockerfile, so an update that touches Dockerfile.gpu waits for a hand-built GPU image.",
+      "matchFileNames": [
+        "Dockerfile.gpu"
+      ],
+      "automerge": false
     }
   ]
 }
