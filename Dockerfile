@@ -45,6 +45,8 @@ RUN set -eux; \
         sed -i '/^Components:/ s/$/ universe/' /etc/apt/sources.list.d/ubuntu.sources; \
     fi; \
     apt-get update; \
+    # The upgrade takes the security fixes published since the base image was built.
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         handbrake \
         handbrake-cli \
