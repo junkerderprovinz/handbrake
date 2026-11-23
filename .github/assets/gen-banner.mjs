@@ -6,10 +6,10 @@
  * NOTICE); only the background and text colours flip. The README serves the
  * pair via <picture>.
  *
- * Wordmark face: DejaVu Sans Bold, claim: DejaVu Sans Book. Both are free
- * (Bitstream Vera / DejaVu licence), fetched at runtime from the
- * dejavu-fonts-ttf npm package via jsDelivr, cached in the OS temp dir, and
- * never committed.
+ * Wordmark face: DejaVu Sans Bold, free (Bitstream Vera / DejaVu licence),
+ * fetched at runtime from the dejavu-fonts-ttf npm package via jsDelivr,
+ * cached in the OS temp dir, and never committed. The claim is in Bree Light,
+ * read as TTF from HOUSE_FONTS (default %LOCALAPPDATA%\halleluja-fonts).
  *
  * The text is converted to SVG paths (opentype.js) so the SVG is self-contained.
  * DejaVu's GSUB ccmp lookups crash opentype.js's feature engine, so runs are
@@ -81,7 +81,9 @@ async function loadFont(url, cacheName) {
 }
 const DEJAVU = "https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf";
 const nameFont = await loadFont(`${DEJAVU}/DejaVuSans-Bold.ttf`, "DejaVuSans-Bold");
-const claimFont = await loadFont(`${DEJAVU}/DejaVuSans.ttf`, "DejaVuSans-Book");
+// The house typeface is licensed, so it is read from a local folder and never committed.
+const fonts = process.env.HOUSE_FONTS ?? join(process.env.LOCALAPPDATA ?? tmpdir(), "halleluja-fonts");
+const claimFont = opentype.parse(readFileSync(join(fonts, "bree-light.ttf")).buffer);
 
 const nameW = runWidth(nameFont, NAME, nameSize);
 const claimW = runWidth(claimFont, CLAIM, claimSize);
