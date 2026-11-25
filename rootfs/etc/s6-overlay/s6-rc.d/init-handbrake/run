@@ -125,7 +125,7 @@ else
     log "ghb preferences not created yet, manual-conversion GUI hook will be wired from the next start"
 fi
 
-chown -R "${PUID:-911}:${PGID:-911}" /config/.config /config/.profile.d /config/handbrake 2>/dev/null || true
+chown -R "${PUID:-911}:${PGID:-911}" /config/.config /config/.cache /config/.local /config/.profile.d /config/handbrake 2>/dev/null || true
 
 if [ -f /etc/handbrake-build ]; then
     BUILD_SHA=$(grep '^sha='  /etc/handbrake-build | cut -d= -f2)

@@ -154,6 +154,12 @@ jobs:
           done
           [ "$webui" -eq 1 ] || fail "WebUI did not respond within 180s"
 
+          echo "== the desktop's folders in /config belong to the container user =="
+          for d in /config/.cache /config/.local /config/.local/share; do
+            owner=$(docker exec "$name" stat -c %U "$d")
+            [ "$owner" = abc ] || fail "$d belongs to $owner, so openbox and ghb cannot write there"
+          done
+
           echo "== dark theme =="
           theme=$(docker exec "$name" cat /run/s6/container_environment/GTK_THEME 2>/dev/null || echo "")
           echo "GTK_THEME=${theme}"
