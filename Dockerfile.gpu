@@ -32,7 +32,7 @@
 #
 #   docker build -f Dockerfile.gpu -t handbrake:gpu-full .
 #
-ARG BASE_IMAGE=ghcr.io/junkerderprovinz/handbrake:latest@sha256:6911b9ec17c56a6337a585433fdb910308d216946fc0628b1aad51b7db88e3cd
+ARG BASE_IMAGE=ghcr.io/junkerderprovinz/handbrake:latest@sha256:9d11e3b275ab3184e3594db84ccd8e3d168724f9c65480513439cfa6b9a4d6f6
 # renovate: datasource=github-releases depName=HandBrake/HandBrake
 ARG HANDBRAKE_TAG=1.11.2
 
